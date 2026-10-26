@@ -42,6 +42,10 @@ python -m unittest discover -s tests -v
 Tests generate mathematical examples at runtime. There are no input files or
 saved example datasets in the repository.
 
+For a complete first run, follow the [synthetic example walkthrough](docs/synthetic-example.md).
+It generates invented records in a new external workspace, runs the models and
+rankings, and verifies resume. Only the generator source is stored here.
+
 ## Run privately
 
 Run on an authorized workstation or private job system. Never attach a runner

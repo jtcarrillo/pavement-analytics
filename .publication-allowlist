@@ -12,6 +12,7 @@ docs/architecture.md
 docs/contracts.md
 docs/deployment.md
 docs/roadmap.md
+docs/synthetic-example.md
 pyproject.toml
 requirements-tested.txt
 src/pavement_analytics/__init__.py
@@ -29,7 +30,9 @@ src/pavement_analytics/ranking.py
 src/pavement_analytics/security.py
 tests/test_analysis.py
 tests/test_boundary.py
+tests/test_example.py
 tests/test_pipeline.py
 tests/test_publication.py
 tools/check_public_tree.py
 tools/install_hooks.py
+tools/make_synthetic_example.py
