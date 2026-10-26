@@ -1,0 +1,22 @@
+[build-system]
+requires = ["setuptools>=75"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "pavement-analytics"
+version = "0.1.0"
+description = "Generic tools for PCI, deduct values, and PAVER exports"
+requires-python = ">=3.11"
+dependencies = [
+  "numpy>=2.0,<3", "pandas>=2.2,<3", "scipy>=1.14,<2",
+  "scikit-learn>=1.5,<2", "openpyxl>=3.1.5,<4"
+]
+
+[project.scripts]
+pavement = "pavement_analytics.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools]
+include-package-data = false

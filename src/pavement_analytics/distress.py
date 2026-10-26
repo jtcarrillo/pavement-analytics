@@ -1,0 +1,59 @@
+"""Derive deduct totals and rates from generic PAVER distress columns."""
+
+from __future__ import annotations
+
+import re
+
+import numpy as np
+import pandas as pd
+
+from .pci import calculate
+from .security import SafeError
+
+DEDUCT = re.compile(r"^(\d{2})[LMH]\s+deduct_(start|end)$", re.I)
+
+
+def derive(pairs: pd.DataFrame, families: dict, profiles: dict | None = None) -> tuple[pd.DataFrame, list[str]]:
+    frame = pairs.copy()
+    claimed = []
+    for name, codes in families.items():
+        if not re.fullmatch(r"[a-z][a-z0-9_]{0,40}", name) or not isinstance(codes, list):
+            raise SafeError("INVALID_DEDUCT_FAMILY")
+        if any(not re.fullmatch(r"\d{2}", str(c)) for c in codes):
+            raise SafeError("INVALID_DEDUCT_CODE")
+        claimed.extend(str(c) for c in codes)
+    if len(set(claimed)) != len(claimed):
+        raise SafeError("OVERLAPPING_DEDUCT_FAMILIES")
+    matched = {c: DEDUCT.match(c) for c in frame if DEDUCT.match(c)}
+    for col in matched:
+        frame[col] = pd.to_numeric(frame[col], errors="coerce")
+    targets = []
+    for end in ["start", "end"]:
+        cols = [c for c, m in matched.items() if m.group(2).lower() == end]
+        values = frame[cols]
+        invalid = (~np.isfinite(values) | ~values.ge(0) | ~values.le(100)).any(axis=1)
+        if not cols:
+            invalid = pd.Series(True, index=frame.index)
+        frame[f"invalid_deduct_{end}"] = invalid
+        total = values.sum(axis=1)
+        frame[f"export_gap_{end}"] = (total.eq(0) & frame[f"PCI_{end}"].lt(99.5)) | invalid
+        for name, codes in families.items():
+            family_cols = [c for c in cols if matched[c].group(1) in {str(v) for v in codes}]
+            frame[f"family_{name}_{end}"] = values[family_cols].sum(axis=1) if family_cols else np.nan
+            frame.loc[invalid, f"family_{name}_{end}"] = np.nan
+        if profiles:
+            calculated = []
+            for index, row in frame.iterrows():
+                if invalid.loc[index]:
+                    calculated.append(np.nan)
+                else:
+                    calculated.append(calculate(row[cols].to_numpy(float), profiles.get(row.material)))
+            frame[f"pci_calc_{end}"] = calculated
+            frame[f"pci_diff_{end}"] = frame[f"pci_calc_{end}"] - frame[f"PCI_{end}"]
+    gap = frame.export_gap_start | frame.export_gap_end
+    for name in families:
+        target = "rate_" + name
+        frame[target] = (frame[f"family_{name}_end"] - frame[f"family_{name}_start"]) * 365 / frame.delta_days
+        frame.loc[gap, target] = np.nan
+        targets.append(target)
+    return frame, targets

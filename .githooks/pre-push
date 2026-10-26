@@ -1,0 +1,3 @@
+#!/bin/sh
+# The external list stays on the authorized internal publishing workstation.
+exec python3 tools/check_public_tree.py --history --require-denylist

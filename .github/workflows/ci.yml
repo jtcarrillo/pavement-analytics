@@ -1,0 +1,35 @@
+name: public-ci
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  public-ci:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      matrix:
+        python: ['3.11', '3.12']
+    env:
+      PAVEMENT_PRIVATE_EXECUTION: '0'
+      PYTHONDONTWRITEBYTECODE: '1'
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5.6.0
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Source and history boundary
+        run: python tools/check_public_tree.py --history
+      - name: Install numerical dependencies
+        run: |
+          python -m pip install -r requirements-tested.txt
+          python -m pip install --no-deps -e .
+      - name: Generated regression tests
+        run: python -m unittest discover -s tests -v

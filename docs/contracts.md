@@ -1,0 +1,124 @@
+# Private configuration and contracts
+
+The `init` command creates a JSON configuration in the external workspace. No
+populated configuration or input example is committed. Unknown keys and repeated
+JSON keys are rejected. Relative paths resolve from the configuration file.
+
+## Configuration keys
+
+| Key | Meaning / default |
+| --- | --- |
+| `schema_version` | Required; `1` |
+| `input_root` | Required private directory within the workspace |
+| `input_files` | Required explicit relative file paths; no discovery/globs |
+| `output` | Required new private run directory outside every Git checkout |
+| `columns` | Required source headers for `section`, `date`, `pci`, `surface`, `group`; optional `construction` |
+| `features` | Required explicit numeric start-state columns; include `PCI_start` |
+| `cutoff_year` | `1980` |
+| `min_delta_days` | `365`; must be positive |
+| `max_delta_days` | Optional upper interval cap |
+| `date_format` | `%Y-%m-%d`; set an explicit format for different CSV dates |
+| `corrections` | Optional private correction table |
+| `deduct_families` | Mapping from generic family labels to disjoint two-digit distress codes |
+| `curve_profiles` | Optional private JSON mapping material labels to approved curve profiles |
+| `models` | `true`; set false for curation/ranking only |
+| `folds` | `5` development folds |
+| `seed` | `42` |
+| `holdout_fraction` | `0.2`; must be greater than zero and less than one half |
+| `association_policy` | `fail`; `report` retains flagged pairs after an intentional private review decision |
+
+Group identifiers must be stable and consistent across source exports. Supply
+their actual private source header through the column mapping. Workbook-relative
+paths scope section pairing, while group IDs define validation isolation.
+Cross-file duplicate records and conflicting group mappings require a separate
+private accession/reconciliation step; this release does not infer them.
+
+XLSX values stored as text retain leading zeros. Numeric Excel cells cannot recover
+zeros that exist only in a display format; export identity columns as text.
+Only the first worksheet is used. Formula cells require valid cached values.
+
+## Correction table
+
+Required headers: `correction_id`, `source_file`, `source_row`, `column`, `expected`,
+`replacement`, `reason`, `reference`, `author`, `date`. Source row numbering starts
+at two, following the header. Each correction must match exactly one cell and its
+expected original value. Corrections cannot change generated provenance columns.
+They are applied sequentially and recorded in the private correction audit.
+Row exclusions and source accession history are future adapters.
+
+## Pair table
+
+Generated keys include `pair_id`, `group_id`, `section_id`, `material`, `start_date`,
+`end_date`, `delta_days`, `PCI_start`, `PCI_end`, `delta_PCI` and `DetRatePerYear`.
+The annualized rate is `delta_PCI * 365 / delta_days`; deterioration is negative.
+All original headers and provenance receive `_start` and `_end` suffixes.
+Canonical numeric PCI fields take precedence over copied text source fields.
+
+Source-relative path, section, group and surface together define a pairing chain.
+An increase resets the anchor; it is treated as a possible intervention, not
+proof of maintenance. An explicit construction flag also resets the anchor.
+Same-day observations collapse to the last source-row observation and conflicts
+are audited. A filtered short/long interval advances the anchor so no pair bridges
+an intermediate inspection. Flat observations on different dates remain eligible.
+
+Materials are `PCC`, `APC`, and `AC`; source `AAC`/`ACC` map to `AC`. Unsupported
+surfaces, invalid dates/PCI and missing section/group identities are rejected with
+one reason per row. Accounting reconciles input = accepted + rejected and
+accepted = initial anchors + considered transitions.
+
+## Deducts and PCI
+
+Recognized source deduct headers have a two-digit code, L/M/H severity, and the
+word `deduct`. They become start/end deduct columns after pairing. Deducts must be
+finite and within 0-100. Missing or invalid entries are not silently converted to
+zero. An export gap is flagged when recorded PCI is below 99.5 and all available
+deducts are zero, or deduct information is invalid/missing.
+
+Family growth is `(family_end - family_start) * 365 / delta_days`, positive for
+deduct growth. Gap rows remain in the PCI-rate task and have missing deduct targets;
+each modeling task drops its own missing targets. A family absent from a material
+does not become an artificial zero target.
+
+Curve profile fields are `name`, `q_threshold`, `m_denominator`, `m_cap`, and
+`curves` (q values as string keys; strictly increasing total-deduct coordinates
+paired with nondecreasing corrected deductions). Approved curves are supplied
+only in the private environment. Multi-deduct PCI requires those curves; missing
+q coverage or out-of-domain values fail. No curve extrapolation or fitted standard
+tables are provided. The maximum-CDV calculation includes fractional m handling;
+multi-severity correction is not implemented. Reference-profile calibration is an
+explicit acceptance step, not an inferred result from unit tests.
+
+## Feature and model contracts
+
+Only declared numeric start-state features enter models. Identity, geographic,
+end-state, cumulative interval, raw distress and provenance fields are rejected
+even when requested explicitly. Unlisted fields are dropped. Each input column
+has exactly one audit disposition. Categorical predictors and optional geographic
+or starting-distress variants are not supported in this initial baseline.
+
+Spearman associations are checked separately by material. Absolute correlation at
+or above 0.90 blocks by default; a private `report` decision permits a reviewed
+exception. Constant columns are harmless but should be removed during that review.
+No family-aware automatic retention is implemented yet.
+
+Models are fitted separately by material and target. Whole groups are reserved
+for holdout before development cross-validation. Imputation and scaling are fitted
+within each training fold. Every candidate uses the same folds and positive
+interval-day weights. Selection minimizes mean fold wMAE and requires improvement
+over the condition baseline in at least 80% of folds. Otherwise the slot is
+`no_model` and retains the condition baseline. Insufficient groups are recorded
+explicitly rather than replaced with random row splits.
+
+CV results are model-selection estimates; the reserved group holdout is the
+independent assessment. The saved estimator is fitted on development groups only.
+Changing or repeatedly consulting the holdout during model development weakens
+that assessment and requires a new independent evaluation design.
+
+## Private outputs
+
+The run contains dataset, feature, rejection, correction, transition, ranking and
+association tables; per-task fold scores, leaders, out-of-fold and holdout
+predictions, a trusted serialized model and summary; a run report, source manifest
+and checksum manifest. Every one of these files remains private, including empty
+reports and hashes. `no_valid_target`, `insufficient_groups`, `modeling_disabled`,
+`no_model` and `champion` are distinct task outcomes.
