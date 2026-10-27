@@ -21,6 +21,7 @@ public repository.
 | Component | Module | Output location |
 | --- | --- | --- |
 | Pinned private source acquisition | `security.sync_private` | Private workspace |
+| Local snapshot and automatic setup | `autorun`, `families` | Private inputs, setup and run configuration |
 | Input verification and guarded corrections | `io` | Private run audits |
 | Filtering and interval construction | `curation` | Private dataset |
 | Deduct targets and curve-based PCI | `distress`, `pci` | Private dataset |
@@ -28,6 +29,7 @@ public repository.
 | Condition-adjusted ranking | `ranking` | Private rankings |
 | Grouped model search | `modeling`, `metrics` | Private models and diagnostics |
 | Immutable run orchestration | `pipeline` | Private manifest and run report |
+| Consolidated visualization | `reporting` | Private CSVs and offline HTML dashboard |
 | Source publication checks | `tools/check_public_tree.py` | Fixed pass/fail status |
 
 ## Private workspace
@@ -46,7 +48,8 @@ overwrite a completed version.
 ## Execution and provenance
 
 The pipeline reads only files named in the private configuration. It hashes
-source bytes, configuration, optional correction/curve files, the package source
+source bytes, configuration, optional correction/curve files, generated setup
+metadata and original snapshots when supplied, the package source
 and dependency versions. It checks that inputs have not changed while the run
 was executing. Every output file is hashed into the run manifest.
 

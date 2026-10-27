@@ -20,7 +20,7 @@ class Parser(argparse.ArgumentParser):
 
 def parser() -> Parser:
     root = Parser(description="Generic PCI, deduct-value and PAVER analysis tools")
-    root.add_argument("--workspace", type=Path, required=True, help="Private workspace outside the code checkout")
+    root.add_argument("--workspace", type=Path, help="Private workspace outside the code checkout")
     commands = root.add_subparsers(dest="command", required=True, parser_class=Parser)
     commands.add_parser("init", help="Write an empty configuration template into the private workspace")
     fetch = commands.add_parser("sync", help="Fetch a pinned private data commit using runtime SSH configuration")
@@ -28,6 +28,13 @@ def parser() -> Parser:
     process = commands.add_parser("run", help="Process data and keep all results inside the private workspace")
     process.add_argument("--config", type=Path, required=True)
     process.add_argument("--resume", action="store_true")
+    analyze = commands.add_parser("analyze", help="Analyze all deduct families from an external file or folder")
+    analyze.add_argument("data", type=Path, help="Private CSV, TSV, XLSX or folder (not recursive)")
+    analyze.add_argument("--workspace", dest="analyze_workspace", type=Path,
+                         help="New empty private workspace; defaults to ~/pavement-runs/run-<timestamp>-<id>")
+    analyze.add_argument("--options", type=Path, help="Optional private JSON column, feature or family overrides")
+    analyze.add_argument("--by-code", action="store_true", help="Use one family per observed code")
+    analyze.add_argument("--open", action="store_true", help="Open the local HTML dashboard after success")
     return root
 
 
@@ -51,11 +58,27 @@ def initialize(boundary: Boundary) -> None:
 
 def main(argv=None) -> int:
     code = None
+    previous_opt_in = None
+    changed_opt_in = False
     try:
         args = parser().parse_args(argv)
+        if args.command == "analyze":
+            from .autorun import new_workspace
+            if args.workspace is not None and args.analyze_workspace is not None:
+                raise SafeError("DUPLICATE_WORKSPACE_ARGUMENT")
+            # The analyze command is itself the explicit request for local private execution.
+            # No environment mutation is retained when this function returns.
+            previous_opt_in = os.environ.get("PAVEMENT_PRIVATE_EXECUTION")
+            os.environ["PAVEMENT_PRIVATE_EXECUTION"] = "1"
+            changed_opt_in = True
+            workspace = new_workspace(args.analyze_workspace or args.workspace)
+        else:
+            if args.workspace is None:
+                raise SafeError("WORKSPACE_REQUIRED")
+            workspace = args.workspace
         refuse_public_execution()
         with private_umask():
-            boundary = Boundary.create(source_root(), args.workspace)
+            boundary = Boundary.create(source_root(), workspace)
             log = boundary.output("logs")
             log.mkdir(exist_ok=True)
             # Capture library warnings and child-library diagnostics privately too.
@@ -68,6 +91,19 @@ def main(argv=None) -> int:
                         elif args.command == "sync":
                             sync_private(boundary, args.commit)
                             code = "PRIVATE_SOURCE_READY"
+                        elif args.command == "analyze":
+                            from .autorun import analyze
+                            code = analyze(boundary, args.data, args.options, by_code=args.by_code)
+                            if args.open:
+                                import subprocess
+                                try:
+                                    subprocess.run(
+                                        [sys.executable, "-c",
+                                         "import sys,webbrowser; sys.exit(0 if webbrowser.open(sys.argv[1]) else 1)",
+                                         boundary.output("results/dashboard.html").as_uri()],
+                                        stdout=stream, stderr=stream, timeout=15, check=True)
+                                except (OSError, subprocess.SubprocessError):
+                                    print("DASHBOARD_OPEN_FAILED_OPEN_HTML_MANUALLY")
                         else:
                             from .pipeline import run
                             code = run(boundary, args.config, resume=args.resume)
@@ -84,6 +120,12 @@ def main(argv=None) -> int:
     except Exception:
         print("PRIVATE_OPERATION_FAILED_CHECK_PRIVATE_LOG", file=sys.stderr)
         return 2
+    finally:
+        if changed_opt_in:
+            if previous_opt_in is None:
+                os.environ.pop("PAVEMENT_PRIVATE_EXECUTION", None)
+            else:
+                os.environ["PAVEMENT_PRIVATE_EXECUTION"] = previous_opt_in
     print(code)
     return 0
 

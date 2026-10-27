@@ -15,9 +15,11 @@ DEDUCT = re.compile(r"^(\d{2})[LMH]\s+deduct_(start|end)$", re.I)
 
 def derive(pairs: pd.DataFrame, families: dict, profiles: dict | None = None) -> tuple[pd.DataFrame, list[str]]:
     frame = pairs.copy()
+    if not isinstance(families, dict):
+        raise SafeError("INVALID_DEDUCT_FAMILY")
     claimed = []
     for name, codes in families.items():
-        if not re.fullmatch(r"[a-z][a-z0-9_]{0,40}", name) or not isinstance(codes, list):
+        if not isinstance(name, str) or not re.fullmatch(r"[a-z][a-z0-9_]{0,40}", name) or not isinstance(codes, list) or not codes:
             raise SafeError("INVALID_DEDUCT_FAMILY")
         if any(not re.fullmatch(r"\d{2}", str(c)) for c in codes):
             raise SafeError("INVALID_DEDUCT_CODE")
@@ -31,15 +33,21 @@ def derive(pairs: pd.DataFrame, families: dict, profiles: dict | None = None) ->
     for end in ["start", "end"]:
         cols = [c for c, m in matched.items() if m.group(2).lower() == end]
         values = frame[cols]
-        invalid = (~np.isfinite(values) | ~values.ge(0) | ~values.le(100)).any(axis=1)
-        if not cols:
-            invalid = pd.Series(True, index=frame.index)
+        present = pd.DataFrame(True, index=frame.index, columns=cols)
+        schema = f"_deduct_schema_{end}"
+        if schema in frame:
+            for col in cols:
+                header = col[:-(len(end) + 1)]
+                present[col] = frame[schema].map(lambda names: header in names)
+        invalid = ((~np.isfinite(values) | ~values.ge(0) | ~values.le(100)) & present).any(axis=1)
+        invalid |= ~present.any(axis=1)
+        values = values.where(present)
         frame[f"invalid_deduct_{end}"] = invalid
         total = values.sum(axis=1)
         frame[f"export_gap_{end}"] = (total.eq(0) & frame[f"PCI_{end}"].lt(99.5)) | invalid
         for name, codes in families.items():
             family_cols = [c for c in cols if matched[c].group(1) in {str(v) for v in codes}]
-            frame[f"family_{name}_{end}"] = values[family_cols].sum(axis=1) if family_cols else np.nan
+            frame[f"family_{name}_{end}"] = values[family_cols].sum(axis=1, min_count=1) if family_cols else np.nan
             frame.loc[invalid, f"family_{name}_{end}"] = np.nan
         if profiles:
             calculated = []
@@ -47,7 +55,8 @@ def derive(pairs: pd.DataFrame, families: dict, profiles: dict | None = None) ->
                 if invalid.loc[index]:
                     calculated.append(np.nan)
                 else:
-                    calculated.append(calculate(row[cols].to_numpy(float), profiles.get(row.material)))
+                    active = [c for c in cols if present.loc[index, c]]
+                    calculated.append(calculate(row[active].to_numpy(float), profiles.get(row.material)))
             frame[f"pci_calc_{end}"] = calculated
             frame[f"pci_diff_{end}"] = frame[f"pci_calc_{end}"] - frame[f"PCI_{end}"]
     gap = frame.export_gap_start | frame.export_gap_end

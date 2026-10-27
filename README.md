@@ -1,7 +1,7 @@
 # Pavement Analytics
 
 Generic Python tools for Pavement Condition Index (PCI), deduct values, and PAVER
-inspection exports. Version 0.1.0 provides a runnable curation and analysis
+inspection exports. Version 0.2.0 provides a runnable curation and analysis
 foundation. All operational inputs, configuration, provenance, fitted models,
 and results belong in a separate private workspace.
 
@@ -45,6 +45,24 @@ saved example datasets in the repository.
 For a complete first run, follow the [synthetic example walkthrough](docs/synthetic-example.md).
 It generates invented records in a new external workspace, runs the models and
 rankings, and verifies resume. Only the generator source is stored here.
+
+## Run all deduct families from a data path
+
+After installation, on your private workstation:
+
+```bash
+pavement analyze "/path/to/private/data" --open
+```
+
+This accepts a CSV/TSV/XLSX file or a folder of exports, detects common headers,
+creates the family targets, runs each material/target, and opens a consolidated
+offline dashboard. It writes a new workspace under `~/pavement-runs/`, including
+CSV summaries, predictions, models and provenance. No input or output is written
+into this repository. No environment variables or configuration are required
+for this command. Default predictors use starting PCI only; unsupported or
+ambiguous schemas require private overrides. Read the
+[family-analysis guide](docs/family-analysis.md) for the default family map,
+grouping assumptions, output definitions and optional predictor settings.
 
 ## Run privately
 
