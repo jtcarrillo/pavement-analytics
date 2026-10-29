@@ -34,6 +34,8 @@ def parser() -> Parser:
                          help="New empty private workspace; defaults to ~/pavement-runs/run-<timestamp>-<id>")
     analyze.add_argument("--options", type=Path, help="Optional private JSON column, feature or family overrides")
     analyze.add_argument("--date-format", help="Explicit inspection-date format, for example %%m/%%d/%%Y")
+    analyze.add_argument("--blank-deducts", choices=("missing", "zero"),
+                         help="Use zero only when empty deduct cells mean absent distress; default missing")
     analyze.add_argument("--by-code", action="store_true", help="Use one family per observed code")
     analyze.add_argument("--open", action="store_true", help="Open the local HTML dashboard after success")
     return root
@@ -95,7 +97,7 @@ def main(argv=None) -> int:
                         elif args.command == "analyze":
                             from .autorun import analyze
                             code = analyze(boundary, args.data, args.options, by_code=args.by_code,
-                                           date_format=args.date_format)
+                                           date_format=args.date_format, blank_deducts=args.blank_deducts)
                             if args.open:
                                 import subprocess
                                 try:

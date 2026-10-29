@@ -1,7 +1,7 @@
 # Pavement Analytics
 
 Generic Python tools for Pavement Condition Index (PCI), deduct values, and PAVER
-inspection exports. Version 0.2.2 provides a runnable curation and analysis
+inspection exports. Version 0.2.3 provides a runnable curation and analysis
 foundation. All operational inputs, configuration, provenance, fitted models,
 and results belong in a separate private workspace.
 
@@ -72,6 +72,15 @@ Common dates and timestamps are normalized automatically per source. When
 month/day order cannot be resolved, supply `--date-format "%m/%d/%Y"` for
 month-first dates or `--date-format "%d/%m/%Y"` for day-first dates; include
 time directives if present. See the guide for private date and pairing diagnostics.
+
+If the export uses empty deduct cells to mean absent distress, run with
+`--blank-deducts zero`. This explicit policy fills only blanks in exported deduct
+columns; malformed values remain invalid and absent columns remain unobserved.
+The dashboard records the policy, fill counts, and target exclusions. Without
+that option, blanks remain missing.
+Both `NN deduct` and `NNL`/`NNM`/`NNH deduct` channels are recognized. Positive
+values in both ungraded and graded forms of one code at an inspection are flagged
+for private reconciliation and excluded from deduct targets to avoid double counting.
 
 ## Run privately
 

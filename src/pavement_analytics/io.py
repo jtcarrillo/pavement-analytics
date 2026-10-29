@@ -107,7 +107,7 @@ def load_sources(root: Path, files: list[str], columns: dict[str, str]) -> tuple
         frame["_source_row"] = range(2, len(frame) + 2)
         frame["_source_sha256"] = before
         # Preserve structural column absence across heterogeneous source exports.
-        deduct_schema = tuple(c for c in frame if re.fullmatch(r"\d{2}[LMH]\s+deduct", c, re.I))
+        deduct_schema = tuple(c for c in frame if re.fullmatch(r"\d{2}[LMH]?\s+deduct", c, re.I))
         frame["_deduct_schema"] = [deduct_schema] * len(frame)
         frames.append(frame)
         manifest.append({"path": str(path.relative_to(root)), "sha256": before, "rows": len(frame)})
