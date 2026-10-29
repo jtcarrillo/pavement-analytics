@@ -3,7 +3,7 @@ import io
 import json
 import os
 from pathlib import Path
-import tempfile
+from temp_support import temporary_directory
 import unittest
 from unittest.mock import patch
 
@@ -22,7 +22,7 @@ from test_analysis import COLUMNS, inspections
 
 class PipelineTests(unittest.TestCase):
     def setUp(self):
-        self.temp = tempfile.TemporaryDirectory()
+        self.temp = temporary_directory()
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
         self.public = self.root / "code"

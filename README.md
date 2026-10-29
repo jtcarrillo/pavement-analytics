@@ -28,8 +28,10 @@ adapters are listed in [the roadmap](docs/roadmap.md).
 
 ## Install and test
 
-Python 3.11 or 3.12 is the initial target. Use an approved package mirror on a
-restricted network. Keep the environment outside the source checkout.
+Use Python 3.11, 3.12 or 3.13. The public CI matrix runs the generated tests on
+Ubuntu with all three versions and on macOS with Python 3.12 and 3.13. Check the
+CI results for the revision you install. Use an approved package mirror on a
+restricted network, and keep the environment outside the source checkout.
 
 ```bash
 python3 -m venv "$HOME/.venvs/pavement-analytics"
@@ -40,7 +42,9 @@ python -m unittest discover -s tests -v
 ```
 
 Tests generate mathematical examples at runtime. There are no input files or
-saved example datasets in the repository.
+saved example datasets in the repository. For an installed command that is not
+found, or a macOS temporary-path test failure, see
+[installation and test troubleshooting](docs/deployment.md#installation-and-test-troubleshooting).
 
 For a complete first run, follow the [synthetic example walkthrough](docs/synthetic-example.md).
 It generates invented records in a new external workspace, runs the models and

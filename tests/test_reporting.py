@@ -1,5 +1,5 @@
 import json
-import tempfile
+from temp_support import temporary_directory
 from pathlib import Path
 import unittest
 
@@ -11,7 +11,7 @@ from pavement_analytics.security import SafeError
 
 class ReportingTests(unittest.TestCase):
     def setUp(self):
-        self.temp = tempfile.TemporaryDirectory()
+        self.temp = temporary_directory()
         self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
         self.target = 'rate_example'

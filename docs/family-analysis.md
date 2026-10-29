@@ -7,6 +7,11 @@ workstation with a local file or a directory of exports:
 pavement analyze "/path/to/private/data" --open
 ```
 
+Activate the environment used for installation in each new terminal. If the
+`pavement` command is not found, the equivalent command is
+`python -m pavement_analytics analyze "/path/to/private/data" --open` using that
+environment's Python. See [installation troubleshooting](deployment.md#installation-and-test-troubleshooting).
+
 No environment variables or hand-written run configuration are required for
 `analyze`. The command explicitly requests local private execution; it still
 refuses execution in GitHub Actions. A private repository already checked out
