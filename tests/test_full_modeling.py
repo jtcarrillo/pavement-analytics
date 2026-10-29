@@ -95,6 +95,56 @@ class FullModelTests(unittest.TestCase):
         bundle = joblib.load(out / "materials/PCC/level_thermal/model.joblib")
         self.assertEqual(bundle["weighting"], "interval_days")
 
+    def test_progress_covers_missing_and_constant_targets_without_changing_results(self):
+        extra_targets = ["fam_missing deduct_end", "fam_constant deduct_end"]
+        self.frame[extra_targets[0]] = np.nan
+        self.frame[extra_targets[1]] = 0.
+        self.frame.to_csv(self.modeldir / "PCC.csv", index=False)
+        pd.concat([self.feature_audit, pd.DataFrame([
+            {"column": name, "disposition": "TARGET", "reason": "generated test"}
+            for name in extra_targets])]).to_csv(self.modeldir / "PCC_feature_audit.csv", index=False)
+        events = []
+        original_search = search_levels
+        def fitting(table, features, target, task_dir, **kwargs):
+            # A started event must be visible before fitting begins.
+            self.assertEqual(events[-1]["status"], "started")
+            self.assertEqual(events[-1]["target"], "fam_" + target.removeprefix("level_") + " deduct_end")
+            return original_search(table, features, target, task_dir, **kwargs)
+        with patch("pavement_analytics.study_modeling.candidates", linear_candidates):
+            plain, plain_audit, _ = run_full_models(self.pipeline, self.report, self.cfg)
+            with patch("pavement_analytics.full_modeling.search_levels", side_effect=fitting):
+                observed, observed_audit, _ = run_full_models(
+                    self.pipeline, self.report, self.cfg, self.pipeline / "progress_models",
+                    progress=events.append)
+        self.assertEqual(observed, plain)
+        self.assertEqual(observed_audit, plain_audit)
+        expected = []
+        for summary in observed:
+            event = {"event": "target", "material": "PCC", "target": summary["original_target"]}
+            expected.extend([{**event, "status": "started"},
+                             {**event, "status": "completed", "result_status": summary["status"]}])
+        self.assertEqual(events, expected)
+        statuses = {summary["original_target"]: summary["status"] for summary in observed}
+        self.assertEqual(statuses[extra_targets[0]], "no_valid_target")
+        self.assertEqual(statuses[extra_targets[1]], "constant_target")
+        for target in ("level_thermal", "level_other"):
+            filename = f"materials/PCC/{target}/holdout_predictions.csv"
+            self.assertEqual((self.pipeline / "09_local_models" / filename).read_bytes(),
+                             (self.pipeline / "progress_models" / filename).read_bytes())
+
+    def test_progress_completes_every_slot_without_features(self):
+        self.feature_audit.loc[self.feature_audit.disposition.eq("KEEP"), "disposition"] = "DROP"
+        self.feature_audit.to_csv(self.modeldir / "PCC_feature_audit.csv", index=False)
+        events = []
+        with patch("pavement_analytics.full_modeling.search_levels") as fitting:
+            summaries, _, _ = run_full_models(self.pipeline, self.report, self.cfg, progress=events.append)
+        fitting.assert_not_called()
+        self.assertEqual(len(events), 2 * len(summaries))
+        self.assertEqual([event["status"] for event in events], ["started", "completed"] * len(summaries))
+        self.assertTrue(all(event["result_status"] == "no_features" for event in events[1::2]))
+        self.assertEqual([event["target"] for event in events[1::2]],
+                         [summary["original_target"] for summary in summaries])
+
     def test_outcome_feature_cannot_bypass_original_audit(self):
         self.frame["PCI_end"] = 80
         self.frame.to_csv(self.modeldir / "PCC.csv", index=False)
@@ -117,9 +167,12 @@ class FullModelTests(unittest.TestCase):
         self.assertFalse((self.pipeline / "09_local_models").exists())
 
     def test_partial_failure_keeps_audit_and_allows_stage_retry(self):
+        events = []
         with patch("pavement_analytics.full_modeling.search_levels", side_effect=SafeError("TEST_MODEL_FAILURE")):
             with self.assertRaisesRegex(SafeError, "TEST_MODEL_FAILURE"):
-                run_full_models(self.pipeline, self.report, self.cfg)
+                run_full_models(self.pipeline, self.report, self.cfg, progress=events.append)
+        self.assertEqual(events, [{"event": "target", "material": "PCC",
+                                   "target": "fam_thermal deduct_end", "status": "started"}])
         self.assertFalse((self.pipeline / "09_local_models").exists())
         self.assertEqual(len(list(self.pipeline.glob("09_local_models_failed_*"))), 1)
         with patch("pavement_analytics.study_modeling.candidates", linear_candidates):

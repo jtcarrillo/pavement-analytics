@@ -48,6 +48,7 @@ src/pavement_analytics/original/rates.py
 src/pavement_analytics/original/split.py
 src/pavement_analytics/pci.py
 src/pavement_analytics/pipeline.py
+src/pavement_analytics/progress.py
 src/pavement_analytics/ranking.py
 src/pavement_analytics/reporting.py
 src/pavement_analytics/security.py
@@ -73,7 +74,9 @@ tests/test_original_climate.py
 tests/test_original_core.py
 tests/test_original_pci.py
 tests/test_original_pipeline.py
+tests/test_original_progress.py
 tests/test_pipeline.py
+tests/test_progress.py
 tests/test_publication.py
 tests/test_reporting.py
 tests/test_study.py

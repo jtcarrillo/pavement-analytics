@@ -102,7 +102,8 @@ class FullPipelineTests(unittest.TestCase):
         if code != expected:
             log = self.work / "logs/runtime.log"
             self.fail(stream.getvalue() + (log.read_text() if log.exists() else ""))
-        self.assertNotIn(str(self.root), stream.getvalue())
+        if "--quiet" in extra:
+            self.assertNotIn(str(self.root), stream.getvalue())
         return stream.getvalue()
 
     def test_every_original_stage_then_modeling_report_and_verified_resume(self):
@@ -112,7 +113,19 @@ class FullPipelineTests(unittest.TestCase):
         inherited_cache = legacy_checkout / "weather_cache"
         self.settings["cache_dir"] = str(inherited_cache)
         self.profile.write_text(json.dumps(self.settings))
-        self.assertEqual(self.run_cli().strip(), "PRIVATE_FULL_PIPELINE_COMPLETE")
+        output = self.run_cli()
+        self.assertTrue(output.rstrip().endswith("PRIVATE_FULL_PIPELINE_COMPLETE"))
+        self.assertIn(str(self.mapping), output)
+        self.assertIn(str(self.profile), output)
+        self.assertIn("export_00.csv", output)
+        self.assertIn("location_00.csv", output)
+        self.assertIn("Started", output)
+        self.assertIn("Completed", output)
+        self.assertIn("Skipped", output)
+        self.assertLess(output.index("01_split"), output.index("02_pairs_PCC"))
+        self.assertIn("fam_pcc_freeze_thaw deduct_end", output)
+        self.assertEqual((self.work / "logs/progress.log").read_text(),
+                         output.removesuffix("PRIVATE_FULL_PIPELINE_COMPLETE\n"))
         selected_cache = self.work.parent / "original-era5-cache"
         setup = json.loads((self.work / "full_setup_report.json").read_text())
         self.assertEqual(setup["climate_cache"], {
@@ -149,7 +162,11 @@ class FullPipelineTests(unittest.TestCase):
         self.assertNotIn("Historical window: 365", html)
         self.assertEqual(list(self.public.iterdir()), [])
         before = len(self.calls)
-        self.run_cli(resume=True)
+        resumed = self.run_cli(resume=True)
+        self.assertIn("Reused", resumed)
+        self.assertIn("09_local_models", resumed)
+        self.assertEqual(len(self.calls), before)
+        self.assertEqual(self.run_cli("--quiet", resume=True).strip(), "PRIVATE_FULL_PIPELINE_COMPLETE")
         self.assertEqual(len(self.calls), before)
         (self.raw / "export_00.csv").write_text((self.raw / "export_00.csv").read_text() + "\n")
         self.assertIn("INPUT_OR_SNAPSHOT_CHANGED", self.run_cli(resume=True, expected=2))
@@ -298,8 +315,51 @@ class FullPipelineTests(unittest.TestCase):
 
     def test_missing_curve_profile_is_an_explicit_setup_failure(self):
         self.curves.unlink()
-        self.assertIn("PRIVATE_CDV_CURVES", self.run_cli(expected=2))
+        output = self.run_cli(expected=2)
+        self.assertIn("PRIVATE_CDV_CURVES", output)
+        self.assertIn("Failed", output)
+        self.assertIn("runtime.log", output)
+        self.assertNotIn("Started \"01_split\"", output)
         self.assertEqual(json.loads((self.work / "full_setup_report.json").read_text())["missing_required"], ["cdv_curves"])
+
+    def test_stage_failure_reports_phase_without_echoing_raw_exception(self):
+        with patch("pavement_analytics.original.pipeline.Pipeline.climate",
+                   side_effect=ValueError("generated-sensitive-error-detail")):
+            output = self.run_cli(expected=2)
+        self.assertIn('Failed "04_climate_PCC"', output)
+        self.assertIn("04_climate_PCC.log", output)
+        self.assertNotIn("generated-sensitive-error-detail", output)
+        self.assertNotIn('Completed "04_climate_PCC"', output)
+        self.assertNotIn('Started "09_local_models"', output)
+        self.assertIn("generated-sensitive-error-detail", (self.work / "logs/runtime.log").read_text())
+
+    def test_setup_read_failure_identifies_current_input_before_stopping(self):
+        failed_input = self.raw / "export_00.csv"
+        failed_input.write_text("bad_column\ngenerated-sensitive-cell\n")
+        output = self.run_cli(expected=2)
+        self.assertIn("Reading input (1/10)", output)
+        self.assertIn(str(failed_input), output)
+        self.assertIn("Failed setup", output)
+        self.assertNotIn('Started "01_split"', output)
+        self.assertNotIn("generated-sensitive-cell", output)
+
+    def test_setup_summary_identifies_unmapped_and_missing_location_files(self):
+        mapping = json.loads(self.mapping.read_text())
+        del mapping["export_00.csv"]
+        mapping["export_01.csv"] = "missing_location.csv"
+        self.mapping.write_text(json.dumps(mapping))
+        events = []
+        boundary = Boundary.create(self.public, self.work)
+        with patch.dict(os.environ, {"PAVEMENT_PRIVATE_EXECUTION": "1", "GITHUB_ACTIONS": "false"}):
+            prepare_full(boundary, self.raw, progress=events.append)
+        inputs = [event for event in events if event["event"] == "input"]
+        self.assertEqual(len(inputs), 10)
+        self.assertEqual(inputs[0]["location_status"], "unmapped")
+        self.assertEqual(inputs[1]["location_status"], "missing_file")
+        summary = events[-1]
+        self.assertEqual(summary["event"], "setup_complete")
+        self.assertEqual((summary["files"], summary["rows"], summary["mapped_files"],
+                          summary["unmapped_files"], summary["missing_location_files"]), (10, 60, 8, 1, 1))
 
     def test_no_data_or_resume_without_workspace_has_clear_errors(self):
         stream = io.StringIO()

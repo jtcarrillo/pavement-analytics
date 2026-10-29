@@ -17,7 +17,8 @@ Only the ERA5 acquisition stage uses a remote service. Configure the normal CDS
 credentials and dataset access on your workstation. DataRobot credentials,
 configuration, SDK and network access are not used. Models, predictions, data
 and reports remain local in a new private workspace under `~/pavement-runs/`.
-The command prints fixed status/error codes; detailed logs are private.
+The command displays local input/mapping paths, stage progress and basic counts.
+Detailed diagnostics and raw subprocess output stay in private logs.
 
 The original input and auxiliary files are still required. Setup discovers
 `pavement-full.json`, then `pipeline.json`, then `pipeline.example.json`, looking
@@ -98,6 +99,34 @@ default end year is the previous calendar year. Review coverage warnings for
 inspection intervals outside the configured window.
 
 ## Stages and outputs
+
+Progress is enabled by default for `pavement full`. Before the numerical stages,
+it lists the selected configuration, mapping JSON, location CSV directory and
+ERA5 cache. Each original input file is shown with its row count and its mapped
+location CSV, or an explicit unmapped/missing-file status. A mapped file means
+the referenced CSV exists; coordinate validity is checked by the location stage.
+
+Each stage prints Started and then Completed, Skipped, Failed or Interrupted,
+with elapsed seconds and relevant counts. Verified stages print Reused on
+resume. Summaries include retained/rejected inspections, pairs, valid/missing
+locations, climate coverage, quarantined pairs, PCI agreement, modeling rows,
+features, validation groups and model outcome counts. The local sweep also
+prints the material and original deduct-family target as each model task starts
+and finishes. Failure output identifies the phase and its detailed log; success
+prints the dashboard, models and run-report paths.
+
+The same readable output is appended to `logs/progress.log` in the run workspace.
+Use `--quiet` for fixed terminal status/error codes while retaining this saved
+progress log:
+
+```bash
+pavement full "/path/to/private/data" --quiet
+```
+
+Progress includes local file paths and aggregate results; keep captured terminal
+output with the private run. Raw data rows, credentials, complete configuration
+objects and exception details are not forwarded to the terminal. Changing this
+display option does not change models or invalidate a verified resume.
 
 All stages are recorded in `pipeline/run_report.json` and `run_report.md` with
 status, timing, counts, warnings and artifact checksums. Empty surface populations
@@ -215,7 +244,7 @@ climate stage can also reuse its weather cache.
 
 Use `full_result.json` for the dashboard location after success. Review
 `pipeline/run_report.md`, `pipeline/warnings.csv`, individual stage logs and
-`logs/runtime.log` for diagnostics. Missing private curve/location inputs fail
+`logs/progress.log` and `logs/runtime.log` for diagnostics. Missing private curve/location inputs fail
 setup explicitly. Live CDS access still requires acceptance testing on the
 deployment workstation; automated tests substitute generated weather and never
 download private-location climate data or contact a training service.

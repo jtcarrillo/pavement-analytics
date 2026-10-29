@@ -137,8 +137,10 @@ use the actual canonical external path instead of a symlink alias.
 
 ## Troubleshooting without disclosure
 
-Console output contains fixed codes. Consult the private `logs/runtime.log` and
-`failed` directories locally. Typical codes include:
+`full` shows local input/mapping paths, progress and aggregate counts. Add
+`--quiet` to keep terminal output to fixed codes; other commands already use
+fixed codes. Consult the private `logs/progress.log` (full runs),
+`logs/runtime.log` and `failed` directories locally. Typical codes include:
 
 | Code | Action |
 | --- | --- |

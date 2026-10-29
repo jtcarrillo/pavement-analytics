@@ -114,7 +114,8 @@ def numeric_stats(series):
 
 class Run:
     """Checkpoints are trusted only when inputs, code, config, and outputs match."""
-    def __init__(self, output, fingerprint, config, inputs, resume=False):
+    def __init__(self, output, fingerprint, config, inputs, resume=False, progress=None):
+        self.progress = progress
         self.boundary = Boundary.create(source_root(), Path(output))
         self.output = self.boundary.workspace
         self.output.mkdir(parents=True, exist_ok=True)
@@ -144,12 +145,21 @@ class Run:
         self.log = None
         self.save()
 
+    def emit(self, event):
+        """Send structured milestones without forwarding raw stage diagnostics."""
+        if self.progress is not None:
+            self.progress(clean_json(event))
+
     def warn(self, code, message, count=None):
         record = {"stage": self.current, "code": code, "message": message}
         if count is not None:
             record["count"] = int(count)
         self.data["warnings"].append(record)
         print(f"WARNING [{code}] {message}", file=sys.stdout, flush=True)
+        event = {"event": "warning", "stage": self.current, "code": code}
+        if count is not None:
+            event["count"] = int(count)
+        self.emit(event)
 
     def save(self):
         summary = {}
@@ -194,17 +204,21 @@ class Run:
 
     def stage(self, key, function):
         self.current = key
+        log_path = self.output / "logs" / f"{key}.log"
         old = self.data["stages"].get(key, {})
         if old.get("status") in {"completed", "skipped"}:
             print(f"REUSE {key}", flush=True)
+            self.emit({"event": "stage", "stage": key, "status": "reused",
+                       "stats": old["stats"], "log": str(log_path)})
             return old["stats"]
         self.data["warnings"] = [w for w in self.data["warnings"] if w["stage"] != key]
-        log_path = self.output / "logs" / f"{key}.log"
         log_path.parent.mkdir(exist_ok=True)
         step = self.data["stages"][key] = {"status": "running", "artifacts": [], "stats": {}}
         self.save()
         print(f"START {key}", flush=True)
+        self.emit({"event": "stage", "stage": key, "status": "started", "log": str(log_path)})
         started = time.monotonic()
+        failure_status = None
         try:
             with log_path.open("w", encoding="utf-8") as log:
                 self.log = log
@@ -220,11 +234,17 @@ class Run:
         except BaseException as exc:
             self.log = None
             step.update(status="failed", error=str(exc))
+            failure_status = "interrupted" if isinstance(exc, KeyboardInterrupt) else "failed"
             raise
         finally:
             step["seconds"] = round(time.monotonic() - started, 3)
             self.save()
+            if failure_status:
+                self.emit({"event": "stage", "stage": key, "status": failure_status,
+                           "seconds": step["seconds"], "log": str(log_path)})
         print(f"DONE  {key} ({step['seconds']:.1f}s)", flush=True)
+        self.emit({"event": "stage", "stage": key, "status": step["status"],
+                   "stats": step["stats"], "seconds": step["seconds"], "log": str(log_path)})
         return step["stats"]
 
     def process(self, argv):
@@ -259,3 +279,5 @@ class Run:
             self.data["error"] = str(error)
         self.save()
         print(f"\n{status.upper()}: {len(self.data['warnings'])} warning(s). Report: {self.output / 'run_report.md'}", flush=True)
+        self.emit({"event": "run", "status": status, "warnings": len(self.data["warnings"]),
+                   "summary": self.data["summary"], "report": str(self.path)})
