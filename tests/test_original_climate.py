@@ -192,8 +192,11 @@ class OriginalClimateIO(unittest.TestCase):
         self.assertTrue((result.ThermalAgingPhi > 0).all())
 
     def test_cli_is_private_and_service_dependency_is_lazy(self):
-        with patch.dict(os.environ, {"PAVEMENT_PRIVATE_EXECUTION": "0"}):
+        with patch.dict(os.environ, {"PAVEMENT_PRIVATE_EXECUTION": "0", "GITHUB_ACTIONS": "false"}):
             with self.assertRaisesRegex(SafeError, "PRIVATE_EXECUTION"):
+                era5.main([])
+        with patch.dict(os.environ, {"PAVEMENT_PRIVATE_EXECUTION": "1", "GITHUB_ACTIONS": "true"}):
+            with self.assertRaisesRegex(SafeError, "GITHUB_ACTIONS_DATA_EXECUTION_FORBIDDEN"):
                 era5.main([])
         with patch.object(era5, "cdsapi", None):
             with self.assertRaisesRegex(SafeError, "REQUIRES_CDSAPI"):
