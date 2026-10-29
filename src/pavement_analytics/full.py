@@ -57,6 +57,44 @@ def _snapshot(path: Path, destination: Path, checksums: dict) -> None:
     checksums[str(destination)] = digest
 
 
+def _select_cache(boundary: Boundary, data: Path, base: Path,
+                  configured: object, explicit: Path | None) -> tuple[Path, dict]:
+    """Reuse safe caches, replacing only unsuitable inherited profile paths."""
+    fallback = boundary.workspace.parent / "original-era5-cache"
+    if explicit is not None:
+        source, candidate = "command_line", explicit
+    elif configured:
+        if not isinstance(configured, str):
+            raise SafeError("INVALID_FULL_PIPELINE_PATH")
+        source, candidate = "profile", Path(configured).expanduser()
+        if not candidate.is_absolute():
+            candidate = base / candidate
+    else:
+        source, candidate = "default", fallback
+
+    def validate(path: Path) -> Path:
+        path = external_path(path, boundary.public)
+        if not disjoint(path, data) or not disjoint(path, boundary.workspace):
+            raise SafeError("CLIMATE_CACHE_MUST_BE_SEPARATE_FROM_INPUTS_AND_RUN")
+        if any((p / ".git").exists() for p in (path, *path.parents)):
+            raise SafeError("CLIMATE_CACHE_MUST_NOT_BE_VERSIONED")
+        if path.exists() and not path.is_dir():
+            raise SafeError("CLIMATE_CACHE_MUST_BE_DIRECTORY")
+        return path
+
+    requested = str(candidate.expanduser().absolute()) if source != "default" else None
+    reason = None
+    try:
+        selected = validate(candidate)
+    except SafeError as error:
+        if source != "profile":
+            raise
+        reason = str(error)
+        selected = validate(fallback)
+    return selected, {"source": source, "requested": requested,
+                      "selected": str(selected), "fallback_reason": reason}
+
+
 def prepare_full(boundary: Boundary, data: Path, config_path: Path | None = None, *,
                  mapping: Path | None = None, csv_dir: Path | None = None,
                  cdv_curves: Path | None = None, cache_dir: Path | None = None,
@@ -78,12 +116,15 @@ def prepare_full(boundary: Boundary, data: Path, config_path: Path | None = None
     cfg = copy.deepcopy(DEFAULTS)
     cfg.update({k: v for k, v in source_options.items() if k in DEFAULTS})
     for key in PATH_KEYS:
+        # Cache precedence and legacy-path fallback are handled separately.
+        if key == "cache_dir":
+            continue
         if cfg.get(key):
             if not isinstance(cfg[key], str):
                 raise SafeError("INVALID_FULL_PIPELINE_PATH")
             value = Path(cfg[key]).expanduser()
             cfg[key] = str(external_path(value if value.is_absolute() else base / value, boundary.public))
-    for key, value in (("mapping", mapping), ("csv_dir", csv_dir), ("cdv_curves", cdv_curves), ("cache_dir", cache_dir)):
+    for key, value in (("mapping", mapping), ("csv_dir", csv_dir), ("cdv_curves", cdv_curves)):
         if value is not None:
             cfg[key] = str(external_path(value, boundary.public))
     folders = list(dict.fromkeys((base, folder, folder.parent)))
@@ -94,7 +135,8 @@ def prepare_full(boundary: Boundary, data: Path, config_path: Path | None = None
         candidate = _candidate_file(folders, ("cdv_curves.json", "dr-multitarget/cdv_curves.json", "data/cdv_curves.json"), boundary.public)
         cfg["cdv_curves"] = str(candidate) if candidate else None
     cfg["csv_dir"] = cfg.get("csv_dir") or (str(Path(cfg["mapping"]).parent) if cfg.get("mapping") else None)
-    cfg["cache_dir"] = cfg.get("cache_dir") or str(boundary.workspace.parent / "original-era5-cache")
+    selected_cache, cache_audit = _select_cache(boundary, data, base, cfg.get("cache_dir"), cache_dir)
+    cfg["cache_dir"] = str(selected_cache)
     retired_backend_request = source_options.get("datarobot", "off")
     cfg["datarobot"] = "off"
     cfg["retired_backend_request"] = retired_backend_request if retired_backend_request != "off" else None
@@ -116,16 +158,12 @@ def prepare_full(boundary: Boundary, data: Path, config_path: Path | None = None
              "blank_distress_policy": "Original structural-zero assumption for exported blank distress cells",
              "target_mode": cfg["target_mode"], "model_backend": "local",
              "retired_backend_request_ignored": retired_backend_request,
+             "climate_cache": cache_audit,
              "sources": [], "date_parsing": [], "column_mapping": [],
              "checksums": {}}
     write_json(boundary.output("full_setup_report.json"), setup)
     if missing:
         raise SafeError("FULL_SETUP_REQUIRES_LOCATION_MAPPING_AND_PRIVATE_CDV_CURVES")
-    cache = Path(cfg["cache_dir"])
-    if not disjoint(cache, data) or not disjoint(cache, boundary.workspace):
-        raise SafeError("CLIMATE_CACHE_MUST_BE_SEPARATE_FROM_INPUTS_AND_RUN")
-    if any((p / ".git").exists() for p in (cache, *cache.parents)):
-        raise SafeError("CLIMATE_CACHE_MUST_NOT_BE_VERSIONED")
     cfg["input_dir"] = str(boundary.output("inputs"))
     cfg["output_dir"] = str(boundary.output("pipeline"))
     validate_config(cfg)
