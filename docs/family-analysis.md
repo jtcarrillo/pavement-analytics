@@ -28,10 +28,41 @@ modified. Symlinks and inputs in the public code tree are rejected.
 
 Common spellings of section ID, inspection date, PCI, surface type and group ID
 are recognized, including `SectionUniqueID`, `Date`, `PCI`, and
-`Inspected Surface Type`. Ambiguous mappings fail with a fixed error code instead
-of guessing. Text identities retain leading zeros. Dates default to ISO
+`Inspected Surface Type`. Known canonical fields take precedence over secondary
+aliases; unresolved ties produce a private candidate report. Text identities
+retain leading zeros. Dates default to ISO
 `YYYY-MM-DD`; native Excel dates are converted automatically. Other CSV date
 formats require a private options override.
+
+The selection rules are independent of column order:
+
+| Role | Automatic precedence |
+| --- | --- |
+| Section | Unique `SectionUniqueID` over `SectionID` or `section` |
+| Surface | Unique `Inspected Surface Type` over `Surface`, `Surface Type` or `Material` |
+| Validation group | Explicit `group_id`; otherwise `NetworkID` over `Network` only under the PAVER profile |
+| Inspection date and PCI | `Date` and `PCI` over other aliases only under the PAVER profile |
+
+The PAVER profile requires unique canonical `SectionUniqueID`, `Date`, `PCI`,
+`Inspected Surface Type` headers and a recognized deduct column. Capitalization
+and separator variants are recognized. Multiple equivalent spellings of the
+preferred field remain ambiguous; an exact-header private override can resolve
+them. A generic `Surface` plus `Material`, for example, still requires a choice.
+No alias is selected because its values look more complete.
+
+Selected fields normalize to the pipeline's role names. If an unselected source
+field already uses that name, it is preserved under `source_extra_<name>` with a
+unique suffix when needed. These preserved fields are excluded from predictors.
+Original source snapshots remain unchanged. Duplicate normalized deduct columns
+still fail to prevent double counting. Different validation-group field types
+across source files require private reconciliation.
+
+`column_mapping_report.json` in the generated workspace records candidates,
+selected fields and selection reasons, even if setup fails. Successful runs also
+include these choices and the complete original-to-normalized header mapping in
+`results/setup_report.json`. For an unresolved role, fill the report's override
+template with an exact candidate header in a private options file and rerun with
+`--options`. Keep these diagnostics private.
 
 Every recognized two-digit distress code and L/M/H deduct column is included.
 The following editable analytical groupings are defaults, not standardized causal
