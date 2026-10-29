@@ -41,7 +41,8 @@ Do not push a suspected data-bearing commit merely to see whether CI catches it.
 Never bypass the pre-push hook, and do not put the private denylist in GitHub.
 
 In GitHub settings, configure default-branch protection/rulesets, required PRs,
-required `public-ci` checks, and named owners for security/workflow changes.
+required checks for each `public-ci` OS/Python matrix entry, and named owners
+for security/workflow changes.
 Enable available secret protection and block force-pushes. These settings have
 to be applied to the selected repository; no administrative settings are assumed
 to exist just because these files are present.
@@ -94,6 +95,45 @@ or output causes refusal. Keep the acceptance record in private storage.
 The provided tests use generated records. They verify code behavior, not the
 connectivity, policy, scientific validity or reference accuracy of a private
 deployment. A real SSH fetch and real-data acceptance must occur internally.
+
+## Installation and test troubleshooting
+
+The CI matrix covers Ubuntu with Python 3.11, 3.12 and 3.13, and macOS with
+Python 3.12 and 3.13. Check all matrix results for the revision being deployed;
+runner architecture follows the hosted image and is not a guarantee that every
+local hardware configuration has been tested.
+
+If installation succeeds but `pavement` is not found, activate the same virtual
+environment in the current terminal, then verify the module entry point:
+
+```bash
+source "$HOME/.venvs/pavement-analytics/bin/activate"
+python -m pavement_analytics --help
+```
+
+If the module is also missing, run `python -m pip install --no-deps -e .` from
+the source checkout in that environment after installing the numerical
+dependencies. You can use `python -m pavement_analytics analyze ...` instead of
+the `pavement` executable; both invoke the same CLI.
+
+On macOS, system temporary directories may be reached through a symlink alias
+such as `/var/folders`. A `SYMLINK_PATH_FORBIDDEN` failure in generated tests can
+therefore occur even when installation succeeded. Update the checkout and rerun
+the tests: the test helpers resolve temporary roots before exercising the path
+boundary. Production inputs and output paths still reject symlinks.
+
+When testing an older checkout, a temporary workaround is to select a canonical
+scratch directory outside every Git checkout for that test command:
+
+```bash
+mkdir -p "$HOME/.cache/pavement-test-tmp"
+PAVEMENT_TEST_TMPDIR="$(python -c 'from pathlib import Path; print((Path.home() / ".cache" / "pavement-test-tmp").resolve())')"
+TMPDIR="$PAVEMENT_TEST_TMPDIR" python -m unittest discover -s tests -v
+```
+
+This changes the test process's temporary directory only. Do not change `HOME`
+or disable the production symlink checks. For an operational input/output error,
+use the actual canonical external path instead of a symlink alias.
 
 ## Troubleshooting without disclosure
 

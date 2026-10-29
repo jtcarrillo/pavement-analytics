@@ -4,7 +4,7 @@ import json
 import os
 import subprocess
 from pathlib import Path
-import tempfile
+from temp_support import temporary_directory
 import unittest
 from unittest.mock import patch
 
@@ -19,7 +19,7 @@ from pavement_analytics.security import Boundary, SafeError
 
 class AnalyzeTests(unittest.TestCase):
     def setUp(self):
-        temporary = tempfile.TemporaryDirectory()
+        temporary = temporary_directory()
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name)
         self.public = self.root / "code"

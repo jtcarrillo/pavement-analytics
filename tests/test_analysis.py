@@ -1,7 +1,7 @@
 """All records are synthesized in memory or in temporary directories."""
 
 from datetime import date, timedelta
-import tempfile
+from temp_support import temporary_directory
 from pathlib import Path
 import unittest
 
@@ -74,7 +74,7 @@ class PairingTests(unittest.TestCase):
 
 class IOTests(unittest.TestCase):
     def test_leading_zero_identity_and_duplicate_header_rejection(self):
-        with tempfile.TemporaryDirectory() as folder:
+        with temporary_directory() as folder:
             path = Path(folder) / "generated.csv"
             inspections(1).drop(columns=[c for c in inspections(1) if c.startswith("_")]).to_csv(path, index=False)
             loaded, manifest = load_sources(Path(folder), [path.name], COLUMNS)
@@ -89,7 +89,7 @@ class IOTests(unittest.TestCase):
         row = {"correction_id": "c1", "source_file": raw._source_file.iloc[0], "source_row": "2",
                "column": "PCI", "expected": "95", "replacement": "94", "reason": "generated test",
                "reference": "test", "author": "test", "date": "2000-01-01"}
-        with tempfile.TemporaryDirectory() as folder:
+        with temporary_directory() as folder:
             path = Path(folder) / "changes.csv"
             pd.DataFrame([row]).to_csv(path, index=False)
             corrected, log = apply_corrections(raw, path)

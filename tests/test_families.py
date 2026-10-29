@@ -1,7 +1,7 @@
 """Generated records verify family sums and structural column absence."""
 
 from pathlib import Path
-import tempfile
+from temp_support import temporary_directory
 import unittest
 
 import numpy as np
@@ -24,7 +24,7 @@ class FamilyTests(unittest.TestCase):
         self.assertNotIn("00", DEFAULT_FAMILIES["pcc_thermal"])
 
     def test_heterogeneous_exports_do_not_invalidate_each_other(self):
-        with tempfile.TemporaryDirectory() as directory:
+        with temporary_directory() as directory:
             root = Path(directory)
             for name, code, material in [("a.csv", "63", "PCC"), ("b.csv", "43", "AC")]:
                 raw = inspections(1, 1, 3)

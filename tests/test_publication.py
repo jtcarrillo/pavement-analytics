@@ -3,7 +3,7 @@ import os
 from pathlib import Path
 import shutil
 import subprocess
-import tempfile
+from temp_support import temporary_directory
 import unittest
 
 SCANNER = Path(__file__).resolve().parents[1] / "tools/check_public_tree.py"
@@ -29,7 +29,7 @@ class PublicationTests(unittest.TestCase):
             check.allowed(b"README.md\nprivate.csv\n")
 
     def test_deleted_data_in_history_still_blocks_publication(self):
-        with tempfile.TemporaryDirectory() as folder:
+        with temporary_directory() as folder:
             root = Path(folder)
             (root / "tools").mkdir()
             shutil.copy2(SCANNER, root / "tools/check_public_tree.py")

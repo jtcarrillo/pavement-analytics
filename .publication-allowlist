@@ -43,3 +43,5 @@ src/pavement_analytics/reporting.py
 tests/test_autorun.py
 tests/test_families.py
 tests/test_reporting.py
+tests/temp_support.py
+tests/test_temp_support.py

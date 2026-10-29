@@ -9,11 +9,23 @@ permissions:
 
 jobs:
   public-ci:
-    runs-on: ubuntu-latest
+    name: public-ci (${{ matrix.os }}, Python ${{ matrix.python }})
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 10
     strategy:
+      fail-fast: false
       matrix:
-        python: ['3.11', '3.12']
+        include:
+          - os: ubuntu-latest
+            python: '3.11'
+          - os: ubuntu-latest
+            python: '3.12'
+          - os: ubuntu-latest
+            python: '3.13'
+          - os: macos-latest
+            python: '3.12'
+          - os: macos-latest
+            python: '3.13'
     env:
       PAVEMENT_PRIVATE_EXECUTION: '0'
       PYTHONDONTWRITEBYTECODE: '1'
