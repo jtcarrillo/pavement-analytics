@@ -52,3 +52,14 @@ tests/test_date_setup.py
 tests/test_blank_deducts.py
 tests/test_blank_setup.py
 tests/test_ungraded_deducts.py
+docs/deduct-study.md
+src/pavement_analytics/climate.py
+src/pavement_analytics/observations.py
+src/pavement_analytics/study.py
+src/pavement_analytics/study_modeling.py
+src/pavement_analytics/study_reporting.py
+tests/test_climate.py
+tests/test_observations.py
+tests/test_study.py
+tests/test_study_modeling.py
+tests/test_study_reporting.py

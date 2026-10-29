@@ -38,6 +38,16 @@ def parser() -> Parser:
                          help="Use zero only when empty deduct cells mean absent distress; default missing")
     analyze.add_argument("--by-code", action="store_true", help="Use one family per observed code")
     analyze.add_argument("--open", action="store_true", help="Open the local HTML dashboard after success")
+    study = commands.add_parser("study", help="Run location/ERA5 enrichment and compare observed deduct targets")
+    study.add_argument("data", type=Path, help="Private inspection file or folder")
+    study.add_argument("--workspace", dest="analyze_workspace", type=Path,
+                       help="New empty private workspace; defaults to ~/pavement-runs/run-<timestamp>-<id>")
+    study.add_argument("--options", type=Path,
+                       help="Private study JSON; otherwise discover pavement-study.json beside data or its parent")
+    study.add_argument("--date-format", help="Explicit inspection-date format")
+    study.add_argument("--blank-deducts", choices=("missing", "zero"))
+    study.add_argument("--by-code", action="store_true", help="One target per observed distress code")
+    study.add_argument("--open", action="store_true", help="Open the consolidated local dashboard")
     return root
 
 
@@ -65,7 +75,7 @@ def main(argv=None) -> int:
     changed_opt_in = False
     try:
         args = parser().parse_args(argv)
-        if args.command == "analyze":
+        if args.command in {"analyze", "study"}:
             from .autorun import new_workspace
             if args.workspace is not None and args.analyze_workspace is not None:
                 raise SafeError("DUPLICATE_WORKSPACE_ARGUMENT")
@@ -94,10 +104,13 @@ def main(argv=None) -> int:
                         elif args.command == "sync":
                             sync_private(boundary, args.commit)
                             code = "PRIVATE_SOURCE_READY"
-                        elif args.command == "analyze":
-                            from .autorun import analyze
-                            code = analyze(boundary, args.data, args.options, by_code=args.by_code,
-                                           date_format=args.date_format, blank_deducts=args.blank_deducts)
+                        elif args.command in {"analyze", "study"}:
+                            if args.command == "study":
+                                from .study import study as operation
+                            else:
+                                from .autorun import analyze as operation
+                            code = operation(boundary, args.data, args.options, by_code=args.by_code,
+                                             date_format=args.date_format, blank_deducts=args.blank_deducts)
                             if args.open:
                                 import subprocess
                                 try:
@@ -111,7 +124,12 @@ def main(argv=None) -> int:
                         else:
                             from .pipeline import run
                             code = run(boundary, args.config, resume=args.resume)
-                    except Exception:
+                    except Exception as error:
+                        if args.command == "study":
+                            status = boundary.output("results/study_status.json")
+                            if status.exists():
+                                write_json(status, {"status": "failed", "error_code": str(error)
+                                                    if isinstance(error, SafeError) else "PRIVATE_OPERATION_FAILED"})
                         import traceback
                         traceback.print_exc()
                         raise

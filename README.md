@@ -1,7 +1,7 @@
 # Pavement Analytics
 
 Generic Python tools for Pavement Condition Index (PCI), deduct values, and PAVER
-inspection exports. Version 0.2.3 provides a runnable curation and analysis
+inspection exports. Version 0.3.0 provides a runnable curation and analysis
 foundation. All operational inputs, configuration, provenance, fitted models,
 and results belong in a separate private workspace.
 
@@ -22,9 +22,10 @@ and results belong in a separate private workspace.
 - An SSH adapter that fetches an exact private data commit into an external workspace.
 - Publication checks for allowed files, Git history and private denylist matches.
 
-This release does not implement the complete research workflow. Live climate
-retrieval, full model tuning, specialized sensitivity analysis and the remaining
-adapters are listed in [the roadmap](docs/roadmap.md).
+The `study` command adds location matching, cached ERA5-Land enrichment, observed
+deduct-family totals, shared validation splits, climate ablation and feature
+importance. Full model tuning and specialized sensitivity analysis remain on
+[the roadmap](docs/roadmap.md).
 
 ## Install and test
 
@@ -50,7 +51,27 @@ For a complete first run, follow the [synthetic example walkthrough](docs/synthe
 It generates invented records in a new external workspace, runs the models and
 rankings, and verifies resume. Only the generator source is stored here.
 
-## Run all deduct families from a data path
+## Compare deduct totals and their predictors
+
+Install the climate extra once, configure your CDS account, and keep the private
+location mapping beside the data or in a saved private study profile:
+
+```bash
+python -m pip install -e '.[climate]'
+pavement study "/path/to/private/data" --blank-deducts zero --open
+```
+
+Use `--blank-deducts zero` only for an export whose blanks mean absent distress.
+The command runs ingestion, inspection checks, location matching, ERA5-Land,
+one model search per material/deduct-family total, and a consolidated offline
+dashboard. It ranks predictability relative to a baseline and shows the most
+useful predictors for each target. It uses historical climate before each
+inspection (365 days by default), not annual deduct changes. Same-inspection
+PCI and raw distress values cannot be predictors. See the
+[study setup and interpretation guide](docs/deduct-study.md) for the one-time
+location/credential setup, exact climate features, and saved profile discovery.
+
+## Legacy analysis of annual deduct change
 
 After installation, on your private workstation:
 
