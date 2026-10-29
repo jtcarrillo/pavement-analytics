@@ -1,13 +1,13 @@
 # Pavement Analytics
 
 Generic Python tools for Pavement Condition Index (PCI), deduct values, and PAVER
-inspection exports. Version 0.3.0 provides a runnable curation and analysis
+inspection exports. Version 0.4.0 provides a runnable curation and analysis
 foundation. All operational inputs, configuration, provenance, fitted models,
 and results belong in a separate private workspace.
 
 ## Implemented
 
-- CSV, TSV and first-worksheet XLSX ingestion; text identifiers remain text.
+- CSV, TSV and first-worksheet XLSX/XLSM ingestion; text identifiers remain text.
 - Guarded, auditable cell corrections without altering the source exports.
 - Surface classification, rejection accounting and consecutive inspection pairs.
 - A 365-day minimum interval by default; increases and construction reset pairing.
@@ -22,7 +22,13 @@ and results belong in a separate private workspace.
 - An SSH adapter that fetches an exact private data commit into an external workspace.
 - Publication checks for allowed files, Git history and private denylist matches.
 
-The `study` command adds location matching, cached ERA5-Land enrichment, observed
+The `full` command restores the original inspection-pair pipeline, including
+its complete ERA5 calculations, distress preparation, PCI reconstruction and
+Shapley decomposition, then runs our own local models for each deduct-family
+total. DataRobot is retired; no SDK, account, upload or external training service
+is required. See [the full pipeline guide](docs/full-pipeline.md).
+
+The separate `study` command adds location matching, cached ERA5-Land enrichment, observed
 deduct-family totals, shared validation splits, climate ablation and feature
 importance. Full model tuning and specialized sensitivity analysis remain on
 [the roadmap](docs/roadmap.md).
@@ -51,7 +57,28 @@ For a complete first run, follow the [synthetic example walkthrough](docs/synthe
 It generates invented records in a new external workspace, runs the models and
 rankings, and verifies resume. Only the generator source is stored here.
 
-## Compare deduct totals and their predictors
+## Run the entire original pipeline with local models
+
+```bash
+python -m pip install -e '.[original]'
+pavement full "/path/to/private/data" --open
+```
+
+This runs every original preparation stage and then compares end-inspection
+deduct-family totals using local baseline, ElasticNet and random-forest models.
+It retains the original inspection intervals and climate definitions, including
+PG, cooling, rainflow and construction-aging calculations. The final offline
+dashboard ranks target predictability and shows the best predictors per family.
+
+The command reuses a private `pavement-full.json`, `pipeline.json`, or
+`pipeline.example.json` beside the data or in its parent. Your existing location
+mapping, location CSVs, CDS credentials and private CDV curve profile are still
+needed. The original `dr-multitarget/cdv_curves.json` can be discovered privately;
+it is not included in this public repository. Legacy DataRobot settings are
+ignored and recorded. The [full pipeline guide](docs/full-pipeline.md) covers
+discovery, optional curve fitting, local model validation and stage resume.
+
+## Alternative inspection-level study
 
 Install the climate extra once, configure your CDS account, and keep the private
 location mapping beside the data or in a saved private study profile:

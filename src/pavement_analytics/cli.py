@@ -8,7 +8,7 @@ import os
 from pathlib import Path
 import sys
 
-from .io import write_json
+from .io import read_json, write_json
 from .security import Boundary, SafeError, private_umask, refuse_public_execution, source_root, sync_private
 
 
@@ -48,6 +48,19 @@ def parser() -> Parser:
     study.add_argument("--blank-deducts", choices=("missing", "zero"))
     study.add_argument("--by-code", action="store_true", help="One target per observed distress code")
     study.add_argument("--open", action="store_true", help="Open the consolidated local dashboard")
+    full = commands.add_parser("full", help="Run every original preparation stage and compare deduct-family targets")
+    full.add_argument("data", type=Path, nargs="?", help="Private inspection file or folder; optional on resume")
+    full.add_argument("--workspace", dest="analyze_workspace", type=Path,
+                      help="New private workspace, or the existing workspace with --resume")
+    full.add_argument("--config", type=Path, help="Original pipeline JSON or private pavement-full.json")
+    full.add_argument("--mapping", type=Path, help="Private original filename-to-location mapping")
+    full.add_argument("--csv-dir", type=Path, help="Private location CSV directory")
+    full.add_argument("--cdv-curves", type=Path, help="Private original CDV profile for PCI reconstruction")
+    full.add_argument("--cache-dir", type=Path, help="Private reusable original ERA5 cache")
+    full.add_argument("--date-format", help="Explicit raw inspection-date format")
+    full.add_argument("--fit-deduct-curves", action="store_true", help="Also run the original optional curve-fitting stage")
+    full.add_argument("--resume", action="store_true", help="Reuse verified completed stages; requires --workspace")
+    full.add_argument("--open", action="store_true", help="Open the consolidated full-pipeline dashboard")
     return root
 
 
@@ -75,7 +88,7 @@ def main(argv=None) -> int:
     changed_opt_in = False
     try:
         args = parser().parse_args(argv)
-        if args.command in {"analyze", "study"}:
+        if args.command in {"analyze", "study", "full"}:
             from .autorun import new_workspace
             if args.workspace is not None and args.analyze_workspace is not None:
                 raise SafeError("DUPLICATE_WORKSPACE_ARGUMENT")
@@ -84,7 +97,13 @@ def main(argv=None) -> int:
             previous_opt_in = os.environ.get("PAVEMENT_PRIVATE_EXECUTION")
             os.environ["PAVEMENT_PRIVATE_EXECUTION"] = "1"
             changed_opt_in = True
-            workspace = new_workspace(args.analyze_workspace or args.workspace)
+            supplied_workspace = args.analyze_workspace or args.workspace
+            if args.command == "full" and args.resume:
+                if supplied_workspace is None:
+                    raise SafeError("FULL_RESUME_REQUIRES_WORKSPACE")
+                workspace = supplied_workspace
+            else:
+                workspace = new_workspace(supplied_workspace)
         else:
             if args.workspace is None:
                 raise SafeError("WORKSPACE_REQUIRED")
@@ -104,20 +123,30 @@ def main(argv=None) -> int:
                         elif args.command == "sync":
                             sync_private(boundary, args.commit)
                             code = "PRIVATE_SOURCE_READY"
-                        elif args.command in {"analyze", "study"}:
-                            if args.command == "study":
+                        elif args.command in {"analyze", "study", "full"}:
+                            dashboard = boundary.output("results/dashboard.html")
+                            if args.command == "full":
+                                from .full import full
+                                code = full(boundary, args.data, args.config, resume=args.resume,
+                                            mapping=args.mapping, csv_dir=args.csv_dir, cdv_curves=args.cdv_curves,
+                                            cache_dir=args.cache_dir, date_format=args.date_format,
+                                            fit_deduct_curves=args.fit_deduct_curves)
+                                dashboard = boundary.path(read_json(boundary.path("full_result.json"))["dashboard"])
+                            elif args.command == "study":
                                 from .study import study as operation
+                                code = operation(boundary, args.data, args.options, by_code=args.by_code,
+                                                 date_format=args.date_format, blank_deducts=args.blank_deducts)
                             else:
                                 from .autorun import analyze as operation
-                            code = operation(boundary, args.data, args.options, by_code=args.by_code,
-                                             date_format=args.date_format, blank_deducts=args.blank_deducts)
+                                code = operation(boundary, args.data, args.options, by_code=args.by_code,
+                                                 date_format=args.date_format, blank_deducts=args.blank_deducts)
                             if args.open:
                                 import subprocess
                                 try:
                                     subprocess.run(
                                         [sys.executable, "-c",
                                          "import sys,webbrowser; sys.exit(0 if webbrowser.open(sys.argv[1]) else 1)",
-                                         boundary.output("results/dashboard.html").as_uri()],
+                                         dashboard.as_uri()],
                                         stdout=stream, stderr=stream, timeout=15, check=True)
                                 except (OSError, subprocess.SubprocessError):
                                     print("DASHBOARD_OPEN_FAILED_OPEN_HTML_MANUALLY")

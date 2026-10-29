@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pavement-analytics"
-version = "0.3.0"
+version = "0.4.0"
 description = "Generic tools for PCI, deduct values, and PAVER exports"
 requires-python = ">=3.11"
 dependencies = [
@@ -14,6 +14,7 @@ dependencies = [
 
 [project.optional-dependencies]
 climate = ["cdsapi>=0.7.7,<1"]
+original = ["cdsapi>=0.7.7,<1", "pyarrow>=12"]
 
 [project.scripts]
 pavement = "pavement_analytics.cli:main"
