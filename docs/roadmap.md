@@ -1,6 +1,6 @@
 # Scope and extension plan
 
-Version 0.1.0 is a new generic implementation, not a verified migration of a
+Version 0.3.0 is a generic implementation, not a verified numerical migration of a
 previous private pipeline. Its tests demonstrate behavior on generated inputs;
 they do not claim agreement with prior project results.
 
@@ -9,14 +9,14 @@ they do not claim agreement with prior project results.
 | Source store | Pinned SSH fetch, explicit local file list, input checksums, guarded cell corrections | Private accession manifest, append-only history, exclusions, duplicate reconciliation and LFS adapter |
 | Shared core | Table I/O, weighted errors, grouped folds, deduct rates, profile-driven maximum CDV and exact Shapley API | Validated reference profiles, multi-severity correction, curve fitting and weighted rank metrics |
 | Curation | Input audits, canonical surfaces, conservative pairing, interval filters | Compatibility adapters and privately benchmarked reconciliation |
-| Climate | Existing numeric start-state source features may be explicitly admitted | Private location adapter, cached climate acquisition, interval feature contract and forecast/as-of timing tests |
-| Features | Explicit numeric admission, identity/outcome rejection, per-material association reports | Categorical inputs, rule-file versioning, family-aware association decisions and controlled variants |
+| Climate | Private location adapter, cached ERA5-Land hourly time series, 25 bounded pre-inspection exposures and timing/coverage tests | Live CDS acceptance on the deployment workstation, additional variables, lifetime-exposure and pavement-temperature contracts |
+| Features | Explicit admission, reviewed inspection metadata, numeric/categorical training-fold transforms, identity/outcome rejection | Rule-file versioning, family-aware association decisions and controlled variants |
 | Ranking | Condition bins, interval weighting, shrinkage integral and rank-swing stability | Private reference comparisons, climate attachments and section-count variant |
-| Models | Two baselines, small ElasticNet/RandomForest grid, grouped CV, reserved group holdout, saved model | Optuna, boosted trees, nested grouped stacking, target-specific losses, SHAP, permutation/PDP diagnostics |
+| Models | Rate and observed-level tasks, baseline/ElasticNet/RandomForest grids, shared study splits, reserved holdout, saved models, climate ablation and permutation importance | Optuna, boosted trees, nested grouped stacking, target-specific losses, SHAP/PDP diagnostics and group-bootstrap uncertainty |
 | Registry | Immutable per-run task summaries and models | Append-only cross-run promotion registry, trusted loaders and group-bootstrap ensembles |
 | Sensitivity/UQ | No specialized backend yet | Dakota driver/decks, analytic toy-problem checks, uncertainty and calibration adapters |
-| Workflows | Local command and verified whole-run resume | Stage-level caching and internal scheduler profiles with private manifests |
-| Reporting | Private audit/result tables and machine-readable run report | Generic local figure/table builders and independently reproducible report assembly |
+| Workflows | Local rate command with verified whole-run resume; end-to-end study command with climate cache | Study fitting resume, stage-level caching and internal scheduler profiles with private manifests |
+| Reporting | Offline rate/study dashboards, target ranking, predictor plots, consolidated CSVs and private audit reports | Cross-run comparison and additional uncertainty displays |
 
 ## Gates
 

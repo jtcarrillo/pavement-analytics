@@ -157,9 +157,13 @@ def normalization_map(headers: list[str], mapping: dict[str, str]) -> dict[str, 
 
 def prepare(boundary: Boundary, data: Path, options_path: Path | None = None,
             *, by_code: bool = False, date_format: str | None = None,
-            blank_deducts: str | None = None) -> Path:
+            blank_deducts: str | None = None, exclude_files: set[Path] | None = None) -> Path:
     """Snapshot sources and write normalized inputs/config; originals stay intact."""
     paths = input_files(data, boundary.public, boundary.workspace)
+    if exclude_files:
+        paths = [p for p in paths if p.resolve() not in exclude_files]
+        if not paths:
+            raise SafeError("NO_INSPECTION_INPUT_FILES")
     options = {}
     options_hash = None
     if options_path is not None:
