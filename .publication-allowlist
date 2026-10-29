@@ -36,3 +36,10 @@ tests/test_publication.py
 tools/check_public_tree.py
 tools/install_hooks.py
 tools/make_synthetic_example.py
+docs/family-analysis.md
+src/pavement_analytics/autorun.py
+src/pavement_analytics/families.py
+src/pavement_analytics/reporting.py
+tests/test_autorun.py
+tests/test_families.py
+tests/test_reporting.py

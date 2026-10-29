@@ -71,6 +71,12 @@ Configure `input_root`, the exact file list and column mapping in the private
 intent flag, not firewall detection. Enforce the network/host boundary through
 your infrastructure and account policy. Run the analysis only there.
 
+Alternatively, `pavement analyze /path/to/private/data --open` snapshots the local
+exports and generates the configuration automatically in a new external workspace.
+This command supplies the explicit local-execution intent without requiring an
+environment variable. It retains the GitHub Actions prohibition and all path
+boundaries. See [family analysis](family-analysis.md) for assumptions and outputs.
+
 Internal job schedulers may call the same CLI from their own private definitions.
 The public repository has no private-workflow trigger, inbound webhook, internal
 runner configuration, data remote secret or results uploader. Do not run private

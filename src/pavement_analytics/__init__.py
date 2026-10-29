@@ -1,3 +1,3 @@
 """Reusable pavement analytics. Operational data belongs outside this package."""
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"

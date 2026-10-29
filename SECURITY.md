@@ -11,10 +11,12 @@ The source handbook and project-specific planning documents do not belong here.
 1. Runtime configuration and the data checkout live outside the public tree.
    Outputs may not be inside any Git checkout. Resolved paths and symlink
    components are checked before file operations.
-2. Every operational CLI command requires an explicit private-execution
-   environment flag and refuses GitHub Actions, including self-hosted Actions.
-   The flag expresses operator intent; it does not detect a firewall or establish
-   authorization. Restrict execution with network and OS controls as well.
+2. Every operational CLI command refuses GitHub Actions, including self-hosted
+   Actions. `init`, `sync` and `run` require the private-execution environment flag.
+   Invoking `analyze` is itself the explicit request for local private execution;
+   it temporarily sets the flag and restores the previous environment afterward.
+   Neither mechanism detects a firewall or establishes authorization. Restrict
+   execution with network and OS controls as well.
 3. Private Git fetching requires a full commit SHA, runtime SSH remote, existing
    authentication and strict host verification. Fetch logs are captured, hooks
    and submodule recursion are disabled, and linked tree entries are rejected.

@@ -21,12 +21,13 @@ from .features import associations, build
 from .io import apply_corrections, load_sources, read_json, sha256, write_json
 from .modeling import search
 from .ranking import rank
+from .reporting import build_report
 from .security import Boundary, SafeError, disjoint, lock, refuse_public_execution, reject_links, source_root
 
 ALLOWED = {"schema_version", "input_root", "input_files", "output", "columns", "cutoff_year",
            "min_delta_days", "max_delta_days", "date_format", "corrections", "features",
            "deduct_families", "curve_profiles", "models", "folds", "seed", "holdout_fraction",
-           "association_policy"}
+           "association_policy", "setup_report"}
 
 
 def validate_config(config: dict) -> None:
@@ -94,10 +95,18 @@ def run(boundary: Boundary, config_path: Path, *, resume: bool = False) -> str:
         raise SafeError("INPUT_OUTPUT_PATHS_MUST_BE_DISJOINT")
     correction = boundary.path(config["corrections"], base=base) if config.get("corrections") else None
     curves = boundary.path(config["curve_profiles"], base=base) if config.get("curve_profiles") else None
-    for auxiliary in [correction, curves]:
+    setup = boundary.path(config["setup_report"], base=base) if config.get("setup_report") else None
+    auxiliaries = [p for p in [correction, curves, setup] if p is not None]
+    if setup is not None:
+        for item in read_json(setup).get("sources", []):
+            snapshot = boundary.path(item["snapshot"], base=setup.parent)
+            if sha256(snapshot) != item["original_sha256"]:
+                raise SafeError("SOURCE_SNAPSHOT_CHANGED")
+            auxiliaries.append(snapshot)
+    for auxiliary in auxiliaries:
         if auxiliary is not None and not disjoint(auxiliary, out):
             raise SafeError("INPUT_OUTPUT_PATHS_MUST_BE_DISJOINT")
-    auxiliary_hashes = {str(p): sha256(p) for p in [correction, curves] if p is not None}
+    auxiliary_hashes = {str(p): sha256(p) for p in auxiliaries}
     raw, sources = load_sources(root, config["input_files"], config["columns"])
     inputs = {"sources": sources, "auxiliary": auxiliary_hashes, "config_sha256": config_hash,
               "code_sha256": code_digest(), "version": __version__, "environment": environment_versions()}
@@ -146,8 +155,11 @@ def run(boundary: Boundary, config_path: Path, *, resume: bool = False) -> str:
                     raise SafeError("FEATURE_ASSOCIATION_REVIEW_REQUIRED")
                 for target in ["DetRatePerYear", *deduct_targets]:
                     finite = np.isfinite(subset[target])
+                    coverage = {"valid_target_rows": int(finite.sum()),
+                                "excluded_missing_target": int((~finite).sum()),
+                                "valid_target_groups": int(subset.loc[finite, "group_id"].nunique())}
                     if not finite.any():
-                        slots.append({"material": material, "target": target, "status": "no_valid_target"})
+                        slots.append({"material": material, "target": target, "status": "no_valid_target", **coverage})
                         continue
                     if config.get("models", True):
                         try:
@@ -160,8 +172,11 @@ def run(boundary: Boundary, config_path: Path, *, resume: bool = False) -> str:
                             summary = {"target": target, "status": "insufficient_groups"}
                     else:
                         summary = {"target": target, "status": "modeling_disabled"}
-                    slots.append({"material": material, **summary})
+                    slots.append({"material": material, **coverage, **summary})
             write_json(staging / "run_report.json", {"accounting": counts, "slots": slots})
+            if setup is not None:
+                shutil.copyfile(setup, staging / "setup_report.json")
+            build_report(staging, slots, counts)
             write_json(staging / "source_manifest.json", {"files": sources})
             # A changing input cannot silently certify an internally inconsistent run.
             current_inputs = all(sha256(root / s["path"]) == s["sha256"] for s in sources)

@@ -44,6 +44,8 @@ def build_pairs(raw: pd.DataFrame, columns: dict, *, cutoff_year: int = 1980,
     pairs, transitions = [], []
     passthrough = [c for c in raw.columns if not c.startswith("_")]
     provenance = ["_source_file", "_source_row", "_source_sha256"]
+    if "_deduct_schema" in raw:
+        provenance.append("_deduct_schema")
     for _, block in valid.groupby(["_source_file", "_section", "_group", "_material"], sort=True):
         ordered = block.sort_values(["_date", "_source_row"], kind="stable").to_dict("records")
         anchor = ordered[0]
