@@ -102,11 +102,38 @@ class FullPipelineTests(unittest.TestCase):
         if code != expected:
             log = self.work / "logs/runtime.log"
             self.fail(stream.getvalue() + (log.read_text() if log.exists() else ""))
-        self.assertNotIn(str(self.root), stream.getvalue())
+        if "--quiet" in extra:
+            self.assertNotIn(str(self.root), stream.getvalue())
         return stream.getvalue()
 
     def test_every_original_stage_then_modeling_report_and_verified_resume(self):
-        self.assertEqual(self.run_cli().strip(), "PRIVATE_FULL_PIPELINE_COMPLETE")
+        legacy_checkout = self.root / "legacy_checkout"
+        legacy_checkout.mkdir()
+        (legacy_checkout / ".git").mkdir()
+        inherited_cache = legacy_checkout / "weather_cache"
+        self.settings["cache_dir"] = str(inherited_cache)
+        self.profile.write_text(json.dumps(self.settings))
+        output = self.run_cli()
+        self.assertTrue(output.rstrip().endswith("PRIVATE_FULL_PIPELINE_COMPLETE"))
+        self.assertIn(str(self.mapping), output)
+        self.assertIn(str(self.profile), output)
+        self.assertIn("export_00.csv", output)
+        self.assertIn("location_00.csv", output)
+        self.assertIn("Started", output)
+        self.assertIn("Completed", output)
+        self.assertIn("Skipped", output)
+        self.assertLess(output.index("01_split"), output.index("02_pairs_PCC"))
+        self.assertIn("fam_pcc_freeze_thaw deduct_end", output)
+        self.assertEqual((self.work / "logs/progress.log").read_text(),
+                         output.removesuffix("PRIVATE_FULL_PIPELINE_COMPLETE\n"))
+        selected_cache = self.work.parent / "original-era5-cache"
+        setup = json.loads((self.work / "full_setup_report.json").read_text())
+        self.assertEqual(setup["climate_cache"], {
+            "source": "profile", "requested": str(inherited_cache), "selected": str(selected_cache),
+            "fallback_reason": "CLIMATE_CACHE_MUST_NOT_BE_VERSIONED"})
+        config = json.loads((self.work / "full_config.json").read_text())
+        self.assertEqual(config["cache_dir"], str(selected_cache))
+        self.assertFalse(inherited_cache.exists())
         pipeline = self.work / "pipeline"
         report = json.loads((pipeline / "run_report.json").read_text())
         for stage in ("01_split", "02_pairs_PCC", "03_location_rate_PCC", "04_climate_PCC", "05_targets_PCC",
@@ -135,7 +162,11 @@ class FullPipelineTests(unittest.TestCase):
         self.assertNotIn("Historical window: 365", html)
         self.assertEqual(list(self.public.iterdir()), [])
         before = len(self.calls)
-        self.run_cli(resume=True)
+        resumed = self.run_cli(resume=True)
+        self.assertIn("Reused", resumed)
+        self.assertIn("09_local_models", resumed)
+        self.assertEqual(len(self.calls), before)
+        self.assertEqual(self.run_cli("--quiet", resume=True).strip(), "PRIVATE_FULL_PIPELINE_COMPLETE")
         self.assertEqual(len(self.calls), before)
         (self.raw / "export_00.csv").write_text((self.raw / "export_00.csv").read_text() + "\n")
         self.assertIn("INPUT_OR_SNAPSHOT_CHANGED", self.run_cli(resume=True, expected=2))
@@ -151,6 +182,121 @@ class FullPipelineTests(unittest.TestCase):
         self.assertNotEqual(Path(cfg["cdv_curves"]), self.curves)
         self.assertEqual(cfg["target_mode"], "deduct_families")
         self.assertEqual(cfg["datarobot"], "off")
+
+    def prepare_setup(self, **options):
+        self.profile.write_text(json.dumps(self.settings))
+        boundary = Boundary.create(self.public, self.work)
+        with patch.dict(os.environ, {"PAVEMENT_PRIVATE_EXECUTION": "1", "GITHUB_ACTIONS": "false"}):
+            config = prepare_full(boundary, self.raw, **options)
+        return config, json.loads((self.work / "full_setup_report.json").read_text())
+
+    def test_inherited_git_cache_uses_external_fallback_without_moving_old_files(self):
+        for marker in ("directory", "worktree_file"):
+            with self.subTest(marker=marker):
+                repository = self.root / ("old_checkout_" + marker)
+                repository.mkdir()
+                if marker == "directory":
+                    (repository / ".git").mkdir()
+                else:
+                    (repository / ".git").write_text("gitdir: ../metadata/worktrees/generated\n")
+                old_cache = repository / "cache"
+                old_cache.mkdir()
+                cached = old_cache / "existing.cache"
+                cached.write_bytes(b"generated existing weather cache")
+                self.work = self.root / ("run_" + marker)
+                self.settings["cache_dir"] = str(old_cache.relative_to(self.root))
+                expected_profile = json.dumps(self.settings)
+                config, setup = self.prepare_setup()
+                fallback = self.work.parent / "original-era5-cache"
+                self.assertEqual(Path(config["cache_dir"]), fallback)
+                self.assertEqual(setup["climate_cache"], {
+                    "source": "profile", "requested": str(old_cache), "selected": str(fallback),
+                    "fallback_reason": "CLIMATE_CACHE_MUST_NOT_BE_VERSIONED"})
+                self.assertEqual(self.profile.read_text(), expected_profile)
+                self.assertEqual(cached.read_bytes(), b"generated existing weather cache")
+                self.assertEqual(list(old_cache.iterdir()), [cached])
+                self.assertFalse(fallback.exists())
+
+    def test_default_cache_and_safe_profile_cache_preserve_expected_selection(self):
+        config, setup = self.prepare_setup()
+        fallback = self.work.parent / "original-era5-cache"
+        self.assertEqual(Path(config["cache_dir"]), fallback)
+        self.assertEqual(setup["climate_cache"], {
+            "source": "default", "requested": None, "selected": str(fallback), "fallback_reason": None})
+        self.work = self.root / "run_safe_cache"
+        safe_cache = self.root / "existing_external_cache"
+        safe_cache.mkdir()
+        (safe_cache / "existing.cache").write_bytes(b"generated weather")
+        self.settings["cache_dir"] = str(safe_cache.relative_to(self.root))
+        config, setup = self.prepare_setup()
+        self.assertEqual(Path(config["cache_dir"]), safe_cache)
+        self.assertEqual(setup["climate_cache"], {
+            "source": "profile", "requested": str(safe_cache), "selected": str(safe_cache),
+            "fallback_reason": None})
+        self.assertEqual((safe_cache / "existing.cache").read_bytes(), b"generated weather")
+
+    def test_explicit_cache_override_wins_over_inherited_repository_cache(self):
+        (self.public / ".git").mkdir()
+        self.settings["cache_dir"] = str(self.public / "old_cache")
+        explicit = self.root / "explicit_external_cache"
+        config, setup = self.prepare_setup(cache_dir=explicit)
+        self.assertEqual(Path(config["cache_dir"]), explicit)
+        self.assertEqual(setup["climate_cache"]["source"], "command_line")
+        self.assertEqual(setup["climate_cache"]["selected"], str(explicit))
+        self.assertIsNone(setup["climate_cache"]["fallback_reason"])
+        self.assertFalse((self.public / "old_cache").exists())
+
+    def test_explicit_repository_cache_is_still_rejected(self):
+        repository = self.root / "explicit_checkout"
+        repository.mkdir()
+        (repository / ".git").write_text("gitdir: ../metadata/worktrees/generated\n")
+        with self.assertRaisesRegex(SafeError, "CLIMATE_CACHE_MUST_NOT_BE_VERSIONED"):
+            self.prepare_setup(cache_dir=repository / "cache")
+        self.assertFalse((repository / "cache").exists())
+        self.assertFalse((self.work / "full_config.json").exists())
+
+    def test_inherited_cache_cannot_overlap_inputs_run_or_public_source(self):
+        for location in ("inputs", "run", "public"):
+            with self.subTest(location=location):
+                self.work = self.root / ("run_overlap_" + location)
+                base = {"inputs": self.raw, "run": self.work, "public": self.public}[location]
+                inherited = base / "cache"
+                self.settings["cache_dir"] = str(inherited)
+                config, setup = self.prepare_setup()
+                self.assertEqual(Path(config["cache_dir"]), self.work.parent / "original-era5-cache")
+                self.assertEqual(setup["climate_cache"]["requested"], str(inherited))
+                expected = ("ANALYZE_SOURCE_MUST_BE_OUTSIDE_PUBLIC_TREE" if location == "public"
+                            else "CLIMATE_CACHE_MUST_BE_SEPARATE_FROM_INPUTS_AND_RUN")
+                self.assertEqual(setup["climate_cache"]["fallback_reason"], expected)
+                self.assertFalse(inherited.exists())
+
+    def test_inherited_unusable_cache_does_not_follow_links_or_overwrite_files(self):
+        target = self.root / "existing_cache_target"
+        target.mkdir()
+        link = self.root / "old_cache_link"
+        link.symlink_to(target, target_is_directory=True)
+        existing_file = self.root / "old_cache_file"
+        existing_file.write_bytes(b"generated existing file")
+        for inherited, reason in ((link, "SYMLINK_PATH_FORBIDDEN"),
+                                  (existing_file, "CLIMATE_CACHE_MUST_BE_DIRECTORY")):
+            with self.subTest(reason=reason):
+                self.work = self.root / ("run_" + reason.lower())
+                self.settings["cache_dir"] = str(inherited)
+                config, setup = self.prepare_setup()
+                self.assertEqual(Path(config["cache_dir"]), self.work.parent / "original-era5-cache")
+                self.assertEqual(setup["climate_cache"]["fallback_reason"], reason)
+                self.assertTrue(link.is_symlink())
+                self.assertEqual(list(target.iterdir()), [])
+                self.assertEqual(existing_file.read_bytes(), b"generated existing file")
+
+    def test_unsafe_default_cache_is_rejected_instead_of_used_as_fallback(self):
+        fallback = self.work.parent / "original-era5-cache"
+        fallback.mkdir()
+        (fallback / ".git").mkdir()
+        with self.assertRaisesRegex(SafeError, "CLIMATE_CACHE_MUST_NOT_BE_VERSIONED"):
+            self.prepare_setup()
+        self.assertFalse((self.work / "full_config.json").exists())
+        self.assertEqual(list(fallback.iterdir()), [fallback / ".git"])
 
     def test_optional_curve_fit_runs_without_using_fitted_outputs_as_predictors(self):
         self.settings.update(fit_deduct_curves=True, datarobot="train", keep_distress=True)
@@ -169,8 +315,51 @@ class FullPipelineTests(unittest.TestCase):
 
     def test_missing_curve_profile_is_an_explicit_setup_failure(self):
         self.curves.unlink()
-        self.assertIn("PRIVATE_CDV_CURVES", self.run_cli(expected=2))
+        output = self.run_cli(expected=2)
+        self.assertIn("PRIVATE_CDV_CURVES", output)
+        self.assertIn("Failed", output)
+        self.assertIn("runtime.log", output)
+        self.assertNotIn("Started \"01_split\"", output)
         self.assertEqual(json.loads((self.work / "full_setup_report.json").read_text())["missing_required"], ["cdv_curves"])
+
+    def test_stage_failure_reports_phase_without_echoing_raw_exception(self):
+        with patch("pavement_analytics.original.pipeline.Pipeline.climate",
+                   side_effect=ValueError("generated-sensitive-error-detail")):
+            output = self.run_cli(expected=2)
+        self.assertIn('Failed "04_climate_PCC"', output)
+        self.assertIn("04_climate_PCC.log", output)
+        self.assertNotIn("generated-sensitive-error-detail", output)
+        self.assertNotIn('Completed "04_climate_PCC"', output)
+        self.assertNotIn('Started "09_local_models"', output)
+        self.assertIn("generated-sensitive-error-detail", (self.work / "logs/runtime.log").read_text())
+
+    def test_setup_read_failure_identifies_current_input_before_stopping(self):
+        failed_input = self.raw / "export_00.csv"
+        failed_input.write_text("bad_column\ngenerated-sensitive-cell\n")
+        output = self.run_cli(expected=2)
+        self.assertIn("Reading input (1/10)", output)
+        self.assertIn(str(failed_input), output)
+        self.assertIn("Failed setup", output)
+        self.assertNotIn('Started "01_split"', output)
+        self.assertNotIn("generated-sensitive-cell", output)
+
+    def test_setup_summary_identifies_unmapped_and_missing_location_files(self):
+        mapping = json.loads(self.mapping.read_text())
+        del mapping["export_00.csv"]
+        mapping["export_01.csv"] = "missing_location.csv"
+        self.mapping.write_text(json.dumps(mapping))
+        events = []
+        boundary = Boundary.create(self.public, self.work)
+        with patch.dict(os.environ, {"PAVEMENT_PRIVATE_EXECUTION": "1", "GITHUB_ACTIONS": "false"}):
+            prepare_full(boundary, self.raw, progress=events.append)
+        inputs = [event for event in events if event["event"] == "input"]
+        self.assertEqual(len(inputs), 10)
+        self.assertEqual(inputs[0]["location_status"], "unmapped")
+        self.assertEqual(inputs[1]["location_status"], "missing_file")
+        summary = events[-1]
+        self.assertEqual(summary["event"], "setup_complete")
+        self.assertEqual((summary["files"], summary["rows"], summary["mapped_files"],
+                          summary["unmapped_files"], summary["missing_location_files"]), (10, 60, 8, 1, 1))
 
     def test_no_data_or_resume_without_workspace_has_clear_errors(self):
         stream = io.StringIO()

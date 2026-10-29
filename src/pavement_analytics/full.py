@@ -7,6 +7,7 @@ provenance, resumption and the added multi-target analysis/report stages.
 from __future__ import annotations
 
 import copy
+from collections import Counter
 from pathlib import Path
 import shutil
 import uuid
@@ -22,6 +23,33 @@ FORMATS = {".csv", ".tsv", ".xlsx", ".xlsm"}
 CANONICAL = {"section": "SectionUniqueID", "date": "Date", "pci": "PCI",
              "surface": "Inspected Surface Type", "construction": "IsConstruction"}
 SETUP_KEYS = {"columns", "date_format", "blank_deducts"}
+
+
+def _notify(progress, event, **fields):
+    if progress is not None:
+        progress({"event": event, **fields})
+
+
+def _setup_files(progress, setup):
+    mapping = setup.get("mapping", {})
+    cache = setup.get("climate_cache", {})
+    _notify(progress, "setup_files", profile=setup.get("profile"),
+            mapping=mapping.get("original_path"), location_directory=mapping.get("location_directory"),
+            cache=cache.get("selected"), cache_source=cache.get("source"),
+            cache_fallback_reason=cache.get("fallback_reason"))
+
+
+def _input_progress(progress, source):
+    _notify(progress, "input", path=source["original_path"], rows=source["rows"],
+            location=source.get("location_path"), location_status=source.get("location_status", "unmapped"))
+
+
+def _setup_complete(progress, setup, report):
+    sources = setup.get("sources", [])
+    counts = Counter(source.get("location_status", "unmapped") for source in sources)
+    _notify(progress, "setup_complete", files=len(sources), rows=sum(s["rows"] for s in sources),
+            mapped_files=counts["mapped"], unmapped_files=counts["unmapped"],
+            missing_location_files=counts["missing_file"], report=str(report))
 
 
 def _profile(data: Path, explicit: Path | None, public: Path) -> Path | None:
@@ -57,11 +85,49 @@ def _snapshot(path: Path, destination: Path, checksums: dict) -> None:
     checksums[str(destination)] = digest
 
 
+def _select_cache(boundary: Boundary, data: Path, base: Path,
+                  configured: object, explicit: Path | None) -> tuple[Path, dict]:
+    """Reuse safe caches, replacing only unsuitable inherited profile paths."""
+    fallback = boundary.workspace.parent / "original-era5-cache"
+    if explicit is not None:
+        source, candidate = "command_line", explicit
+    elif configured:
+        if not isinstance(configured, str):
+            raise SafeError("INVALID_FULL_PIPELINE_PATH")
+        source, candidate = "profile", Path(configured).expanduser()
+        if not candidate.is_absolute():
+            candidate = base / candidate
+    else:
+        source, candidate = "default", fallback
+
+    def validate(path: Path) -> Path:
+        path = external_path(path, boundary.public)
+        if not disjoint(path, data) or not disjoint(path, boundary.workspace):
+            raise SafeError("CLIMATE_CACHE_MUST_BE_SEPARATE_FROM_INPUTS_AND_RUN")
+        if any((p / ".git").exists() for p in (path, *path.parents)):
+            raise SafeError("CLIMATE_CACHE_MUST_NOT_BE_VERSIONED")
+        if path.exists() and not path.is_dir():
+            raise SafeError("CLIMATE_CACHE_MUST_BE_DIRECTORY")
+        return path
+
+    requested = str(candidate.expanduser().absolute()) if source != "default" else None
+    reason = None
+    try:
+        selected = validate(candidate)
+    except SafeError as error:
+        if source != "profile":
+            raise
+        reason = str(error)
+        selected = validate(fallback)
+    return selected, {"source": source, "requested": requested,
+                      "selected": str(selected), "fallback_reason": reason}
+
+
 def prepare_full(boundary: Boundary, data: Path, config_path: Path | None = None, *,
                  mapping: Path | None = None, csv_dir: Path | None = None,
                  cdv_curves: Path | None = None, cache_dir: Path | None = None,
                  date_format: str | None = None,
-                 fit_deduct_curves: bool = False) -> dict:
+                 fit_deduct_curves: bool = False, progress=None) -> dict:
     from .original.pipeline import DEFAULTS, PATH_KEYS, validate_config
 
     data = external_path(data, boundary.public)
@@ -78,12 +144,15 @@ def prepare_full(boundary: Boundary, data: Path, config_path: Path | None = None
     cfg = copy.deepcopy(DEFAULTS)
     cfg.update({k: v for k, v in source_options.items() if k in DEFAULTS})
     for key in PATH_KEYS:
+        # Cache precedence and legacy-path fallback are handled separately.
+        if key == "cache_dir":
+            continue
         if cfg.get(key):
             if not isinstance(cfg[key], str):
                 raise SafeError("INVALID_FULL_PIPELINE_PATH")
             value = Path(cfg[key]).expanduser()
             cfg[key] = str(external_path(value if value.is_absolute() else base / value, boundary.public))
-    for key, value in (("mapping", mapping), ("csv_dir", csv_dir), ("cdv_curves", cdv_curves), ("cache_dir", cache_dir)):
+    for key, value in (("mapping", mapping), ("csv_dir", csv_dir), ("cdv_curves", cdv_curves)):
         if value is not None:
             cfg[key] = str(external_path(value, boundary.public))
     folders = list(dict.fromkeys((base, folder, folder.parent)))
@@ -94,7 +163,8 @@ def prepare_full(boundary: Boundary, data: Path, config_path: Path | None = None
         candidate = _candidate_file(folders, ("cdv_curves.json", "dr-multitarget/cdv_curves.json", "data/cdv_curves.json"), boundary.public)
         cfg["cdv_curves"] = str(candidate) if candidate else None
     cfg["csv_dir"] = cfg.get("csv_dir") or (str(Path(cfg["mapping"]).parent) if cfg.get("mapping") else None)
-    cfg["cache_dir"] = cfg.get("cache_dir") or str(boundary.workspace.parent / "original-era5-cache")
+    selected_cache, cache_audit = _select_cache(boundary, data, base, cfg.get("cache_dir"), cache_dir)
+    cfg["cache_dir"] = str(selected_cache)
     retired_backend_request = source_options.get("datarobot", "off")
     cfg["datarobot"] = "off"
     cfg["retired_backend_request"] = retired_backend_request if retired_backend_request != "off" else None
@@ -116,16 +186,14 @@ def prepare_full(boundary: Boundary, data: Path, config_path: Path | None = None
              "blank_distress_policy": "Original structural-zero assumption for exported blank distress cells",
              "target_mode": cfg["target_mode"], "model_backend": "local",
              "retired_backend_request_ignored": retired_backend_request,
+             "climate_cache": cache_audit,
+             "mapping": {"original_path": cfg.get("mapping"), "location_directory": cfg.get("csv_dir")},
              "sources": [], "date_parsing": [], "column_mapping": [],
              "checksums": {}}
     write_json(boundary.output("full_setup_report.json"), setup)
+    _setup_files(progress, setup)
     if missing:
         raise SafeError("FULL_SETUP_REQUIRES_LOCATION_MAPPING_AND_PRIVATE_CDV_CURVES")
-    cache = Path(cfg["cache_dir"])
-    if not disjoint(cache, data) or not disjoint(cache, boundary.workspace):
-        raise SafeError("CLIMATE_CACHE_MUST_BE_SEPARATE_FROM_INPUTS_AND_RUN")
-    if any((p / ".git").exists() for p in (cache, *cache.parents)):
-        raise SafeError("CLIMATE_CACHE_MUST_NOT_BE_VERSIONED")
     cfg["input_dir"] = str(boundary.output("inputs"))
     cfg["output_dir"] = str(boundary.output("pipeline"))
     validate_config(cfg)
@@ -157,6 +225,7 @@ def prepare_full(boundary: Boundary, data: Path, config_path: Path | None = None
         raise SafeError("INVALID_DATE_FORMAT")
     for index, source in enumerate(files, 1):
         source = external_path(source, boundary.public)
+        _notify(progress, "input_started", path=str(source), index=index, files=len(files))
         snapshot = boundary.output(f"originals/input_{index:04d}{source.suffix.lower()}")
         _snapshot(source, snapshot, checksums)
         frame = read_table(snapshot)
@@ -176,18 +245,24 @@ def prepare_full(boundary: Boundary, data: Path, config_path: Path | None = None
         output = normalized_root / f"input_{index:04d}.csv"
         frame.to_csv(output, index=False)
         checksums[str(output)] = sha256(output)
-        setup["sources"].append({"original_path": str(source), "snapshot": str(snapshot),
-                                  "normalized": str(output), "rows": len(frame),
-                                  "observed_deduct_columns": [c for c in frame if c.endswith(" deduct")]})
+        source_report = {"original_path": str(source), "snapshot": str(snapshot),
+                         "normalized": str(output), "rows": len(frame),
+                         "observed_deduct_columns": [c for c in frame if c.endswith(" deduct")],
+                         "location_path": None, "location_status": "unmapped"}
+        setup["sources"].append(source_report)
         if source.name in source_mapping:
             original_location = external_path(location_root / source_mapping[source.name], boundary.public)
+            source_report["location_path"] = str(original_location)
             if original_location.is_file():
                 location_snapshot = boundary.output(f"location_inputs/location_{index:04d}.csv")
                 _snapshot(original_location, location_snapshot, checksums)
                 snapshot_map[output.name] = location_snapshot.name
+                source_report.update(location_status="mapped", location_snapshot=str(location_snapshot))
             else:
+                source_report["location_status"] = "missing_file"
                 setup.setdefault("missing_location_files", []).append(str(original_location))
         write_json(boundary.output("full_setup_report.json"), setup)
+        _input_progress(progress, source_report)
     _snapshot(Path(cfg["mapping"]), boundary.output("originals/location_mapping.json"), checksums)
     mapping_snapshot = boundary.output("location_inputs/mapping.json")
     mapping_snapshot.parent.mkdir(exist_ok=True)
@@ -201,6 +276,7 @@ def prepare_full(boundary: Boundary, data: Path, config_path: Path | None = None
             cfg[key] = str(destination)
     write_json(boundary.output("full_setup_report.json"), setup)
     write_json(boundary.output("full_config.json"), cfg)
+    _setup_complete(progress, setup, boundary.path("full_setup_report.json"))
     return cfg
 
 
@@ -217,34 +293,45 @@ def full(boundary: Boundary, data: Path | None = None, config_path: Path | None 
          resume: bool = False, mapping: Path | None = None, csv_dir: Path | None = None,
          cdv_curves: Path | None = None, cache_dir: Path | None = None,
          date_format: str | None = None,
-         fit_deduct_curves: bool = False) -> str:
+         fit_deduct_curves: bool = False, progress=None) -> str:
     from .original.pipeline import Pipeline, discover, validate_config
     from .original.common import Run
     from .full_modeling import run_full_models, consolidate_full_models
 
     refuse_public_execution()
     with lock(boundary.output(".full.lock")):
-        if resume:
-            if any(v is not None for v in (config_path, mapping, csv_dir, cdv_curves, cache_dir, date_format)) or fit_deduct_curves:
-                raise SafeError("FULL_RESUME_REQUIRES_UNCHANGED_CONFIGURATION")
-            cfg = read_json(boundary.path("full_config.json"))
-            setup = _verify_setup(boundary)
-            if data is not None and str(external_path(data, boundary.public)) != setup["original_data"]:
-                raise SafeError("FULL_RESUME_DATA_PATH_CHANGED")
-        else:
-            if data is None:
-                raise SafeError("FULL_PIPELINE_DATA_PATH_REQUIRED")
-            cfg = prepare_full(boundary, data, config_path, mapping=mapping, csv_dir=csv_dir,
-                               cdv_curves=cdv_curves, cache_dir=cache_dir, date_format=date_format,
-                               fit_deduct_curves=fit_deduct_curves)
-        validate_config(cfg)
-        # Stored configuration must continue to point only inside this run for
-        # sources/artifacts, except the explicitly external reusable climate cache.
-        for key in ("input_dir", "output_dir", "mapping", "csv_dir", "cdv_curves", "deduct_curves", "families"):
-            if cfg.get(key):
-                boundary.path(cfg[key])
-        files, mapping_data, inputs, fingerprint = discover(cfg)
-        run = Run(cfg["output_dir"], fingerprint, cfg, inputs, resume)
+        _notify(progress, "setup_started", workspace=str(boundary.workspace),
+                data=str(data) if data is not None else None, resume=resume)
+        try:
+            if resume:
+                if any(v is not None for v in (config_path, mapping, csv_dir, cdv_curves, cache_dir, date_format)) or fit_deduct_curves:
+                    raise SafeError("FULL_RESUME_REQUIRES_UNCHANGED_CONFIGURATION")
+                cfg = read_json(boundary.path("full_config.json"))
+                setup = _verify_setup(boundary)
+                if data is not None and str(external_path(data, boundary.public)) != setup["original_data"]:
+                    raise SafeError("FULL_RESUME_DATA_PATH_CHANGED")
+                _setup_files(progress, setup)
+                for source in setup["sources"]:
+                    _input_progress(progress, source)
+                _setup_complete(progress, setup, boundary.path("full_setup_report.json"))
+            else:
+                if data is None:
+                    raise SafeError("FULL_PIPELINE_DATA_PATH_REQUIRED")
+                cfg = prepare_full(boundary, data, config_path, mapping=mapping, csv_dir=csv_dir,
+                                   cdv_curves=cdv_curves, cache_dir=cache_dir, date_format=date_format,
+                                   fit_deduct_curves=fit_deduct_curves, progress=progress)
+            validate_config(cfg)
+            # Sources/artifacts stay inside the run; the reusable cache is external.
+            for key in ("input_dir", "output_dir", "mapping", "csv_dir", "cdv_curves", "deduct_curves", "families"):
+                if cfg.get(key):
+                    boundary.path(cfg[key])
+            files, mapping_data, inputs, fingerprint = discover(cfg)
+            run = Run(cfg["output_dir"], fingerprint, cfg, inputs, resume, progress=progress)
+        except BaseException as error:
+            _notify(progress, "setup_failed", code=str(error) if isinstance(error, SafeError) else
+                    "INTERRUPTED" if isinstance(error, KeyboardInterrupt) else "PRIVATE_SETUP_FAILED",
+                    log=str(boundary.path("logs/runtime.log")))
+            raise
         run.data["config"] = cfg
         try:
             code = Pipeline(cfg, run, files, mapping_data).execute()
@@ -257,8 +344,9 @@ def full(boundary: Boundary, data: Path | None = None, config_path: Path | None 
                 failed.mkdir(exist_ok=True)
                 models_out.rename(failed / ("local-models-" + uuid.uuid4().hex[:8]))
             def model_stage():
-                summaries, audit, artifacts = run_full_models(pipeline_out, run.data, cfg, out=models_out)
-                return {"targets": len(summaries), "output": str(models_out.relative_to(pipeline_out))}, artifacts
+                summaries, audit, artifacts = run_full_models(pipeline_out, run.data, cfg, out=models_out, progress=progress)
+                return {"targets": len(summaries), "status_counts": dict(Counter(s["status"] for s in summaries)),
+                        "output": str(models_out.relative_to(pipeline_out))}, artifacts
             run.stage("09_local_models", model_stage)
             saved = read_json(models_out / "sweep_summary.json")
             report_out = pipeline_out / "10_report"
@@ -274,11 +362,13 @@ def full(boundary: Boundary, data: Path | None = None, config_path: Path | None 
                         "local_models": "completed", "model_backend": "local"}, artifacts
             run.stage(report_key, report_stage)
             _verify_setup(boundary)
-            run.finish("completed_with_warnings" if run.data["warnings"] else "completed")
             write_json(boundary.output("full_config.json"), cfg)
             write_json(boundary.output("full_result.json"), {"status": "completed", "model_backend": "local",
                                                             "dashboard": str(report_out / "dashboard.html"),
                                                             "run_report": str(run.path)})
+            run.finish("completed_with_warnings" if run.data["warnings"] else "completed")
+            _notify(progress, "output", dashboard=str(report_out / "dashboard.html"),
+                    models=str(models_out), report=str(run.path))
         except BaseException as error:
             run.finish("interrupted" if isinstance(error, KeyboardInterrupt) else "failed", str(error))
             if isinstance(error, (SafeError, KeyboardInterrupt)):

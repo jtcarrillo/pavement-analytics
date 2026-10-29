@@ -98,7 +98,7 @@ def _slot_without_features(table, target, original_target):
 
 
 def run_full_models(pipeline_out: Path, pipeline_report: dict, cfg: dict,
-                    out: Path | None = None) -> tuple[list[dict], dict, list[Path]]:
+                    out: Path | None = None, *, progress=None) -> tuple[list[dict], dict, list[Path]]:
     """Run the local target sweep; return summaries, report audit, and artifacts.
 
     The shared plan must already have been written by original stage 07. The
@@ -176,6 +176,9 @@ def run_full_models(pipeline_out: Path, pipeline_report: dict, cfg: dict,
             numeric = table[features].apply(pd.to_numeric, errors="coerce")
             numeric.corr(method="spearman").to_csv(material_dir / "feature_correlations.csv")
             for alias, original_target in aliases.items():
+                if progress is not None:
+                    progress({"event": "target", "material": surface,
+                              "target": original_target, "status": "started"})
                 task_dir = material_dir / alias
                 if features:
                     summary = search_levels(table, features, alias, task_dir, partitions=plan,
@@ -188,6 +191,10 @@ def run_full_models(pipeline_out: Path, pipeline_report: dict, cfg: dict,
                     task_dir.mkdir()
                     write_json(task_dir / "summary.json", summary)
                 summaries.append({"material": surface, **summary})
+                if progress is not None:
+                    progress({"event": "target", "material": surface,
+                              "target": original_target, "status": "completed",
+                              "result_status": summary["status"]})
         climate_stats = [_stage_stats(pipeline_report, "04_climate_" + s) for s in surfaces]
         partition_stats = _stage_stats(pipeline_report, "07_partitions")
         input_stats = _stage_stats(pipeline_report, "01_split")

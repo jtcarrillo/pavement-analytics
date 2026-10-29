@@ -1,4 +1,4 @@
-"""CLI: private paths and records never appear in terminal diagnostics."""
+"""CLI: full runs show requested progress; raw diagnostics remain private."""
 
 from __future__ import annotations
 
@@ -60,6 +60,7 @@ def parser() -> Parser:
     full.add_argument("--date-format", help="Explicit raw inspection-date format")
     full.add_argument("--fit-deduct-curves", action="store_true", help="Also run the original optional curve-fitting stage")
     full.add_argument("--resume", action="store_true", help="Reuse verified completed stages; requires --workspace")
+    full.add_argument("--quiet", action="store_true", help="Print fixed status/error codes only; save progress in the run logs")
     full.add_argument("--open", action="store_true", help="Open the consolidated full-pipeline dashboard")
     return root
 
@@ -114,7 +115,12 @@ def main(argv=None) -> int:
             log = boundary.output("logs")
             log.mkdir(exist_ok=True)
             # Capture library warnings and child-library diagnostics privately too.
-            with boundary.output(log / "runtime.log").open("a", encoding="utf-8") as stream:
+            with boundary.output(log / "runtime.log").open("a", encoding="utf-8") as stream, contextlib.ExitStack() as stack:
+                progress = None
+                if args.command == "full":
+                    from .progress import FullProgress
+                    progress_log = stack.enter_context(boundary.output(log / "progress.log").open("a", encoding="utf-8"))
+                    progress = FullProgress(None if args.quiet else sys.stdout, progress_log)
                 with contextlib.redirect_stdout(stream), contextlib.redirect_stderr(stream):
                     try:
                         if args.command == "init":
@@ -130,7 +136,7 @@ def main(argv=None) -> int:
                                 code = full(boundary, args.data, args.config, resume=args.resume,
                                             mapping=args.mapping, csv_dir=args.csv_dir, cdv_curves=args.cdv_curves,
                                             cache_dir=args.cache_dir, date_format=args.date_format,
-                                            fit_deduct_curves=args.fit_deduct_curves)
+                                            fit_deduct_curves=args.fit_deduct_curves, progress=progress)
                                 dashboard = boundary.path(read_json(boundary.path("full_result.json"))["dashboard"])
                             elif args.command == "study":
                                 from .study import study as operation

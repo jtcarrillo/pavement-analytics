@@ -1,7 +1,7 @@
 # Pavement Analytics
 
 Generic Python tools for Pavement Condition Index (PCI), deduct values, and PAVER
-inspection exports. Version 0.4.0 provides a runnable curation and analysis
+inspection exports. Version 0.4.2 provides a runnable curation and analysis
 foundation. All operational inputs, configuration, provenance, fitted models,
 and results belong in a separate private workspace.
 
@@ -69,6 +69,8 @@ deduct-family totals using local baseline, ElasticNet and random-forest models.
 It retains the original inspection intervals and climate definitions, including
 PG, cooling, rainflow and construction-aging calculations. The final offline
 dashboard ranks target predictability and shows the best predictors per family.
+The terminal shows selected input/mapping files, stage progress and basic counts,
+with a copy in `logs/progress.log`. Add `--quiet` to suppress that terminal summary.
 
 The command reuses a private `pavement-full.json`, `pipeline.json`, or
 `pipeline.example.json` beside the data or in its parent. Your existing location
@@ -162,10 +164,11 @@ subdirectory under `sources/<commit>`. The program reads explicit files only;
 it does not discover or execute code from the data repository. Git LFS objects
 need an approved internal materialization step; unresolved pointers are rejected.
 
-All results stay under the configured private output directory. Console output
-contains fixed status/error codes only. Detailed diagnostics stay in private
-`logs/runtime.log`. No automatic publication, telemetry or external model service
-is part of the analysis pipeline.
+All results stay under the configured private output directory. `full` displays
+local file paths, progress and aggregate counts by default; `full --quiet` and
+the other commands print fixed status/error codes. Detailed diagnostics stay in
+private `logs/runtime.log`. No automatic publication, telemetry or external model
+service is part of the analysis pipeline.
 
 ## Publish source changes
 
