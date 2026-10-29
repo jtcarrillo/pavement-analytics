@@ -66,27 +66,92 @@ def input_files(data: Path, public: Path, workspace: Path) -> list[Path]:
     return paths
 
 
-def column_map(headers: list[str], overrides: dict) -> dict[str, str]:
+def _header_key(header: str) -> str:
+    return re.sub(r"[^a-z0-9]", "", header.lower())
+
+
+def column_map(headers: list[str], overrides: dict, *, diagnostics: dict | None = None) -> dict[str, str]:
+    """Prefer known schema fields; never break an unresolved tie by column order."""
+    audit = diagnostics if diagnostics is not None else {}
+    candidates = {role: sorted((h for h in headers if _header_key(h) in names),
+                              key=lambda h: (h.casefold(), h)) for role, names in ALIASES.items()}
+    paver = (all(sum(_header_key(h) == token for h in headers) == 1 for token in
+                 ["sectionuniqueid", "date", "pci", "inspectedsurfacetype"])
+             and any(DEDUCT_HEADER.fullmatch(h) for h in headers))
+    audit.update(profile="paver" if paver else "generic", roles={
+        role: {"candidates": matches, "selected": None, "selection": "absent"}
+        for role, matches in candidates.items()})
     if not isinstance(overrides, dict) or set(overrides) - set(ALIASES):
         raise SafeError("INVALID_COLUMN_MAPPING")
     found = {}
-    for logical, names in ALIASES.items():
+    ambiguous = False
+    for logical in ALIASES:
+        decision = audit["roles"][logical]
         if logical in overrides:
             source = overrides[logical]
             if not isinstance(source, str) or source not in headers:
                 raise SafeError("REQUIRED_INPUT_COLUMNS_MISSING")
             found[logical] = source
+            decision.update(selected=source, selection="explicit_override")
             continue
-        matches = [h for h in headers if re.sub(r"[^a-z0-9]", "", h.lower()) in names]
+        matches = candidates[logical]
         if len(matches) > 1:
-            raise SafeError("AMBIGUOUS_COLUMNS_USE_PRIVATE_OPTIONS")
+            preferred = {"section": ["sectionuniqueid"], "surface": ["inspectedsurfacetype"]}.get(logical, [])
+            if logical in {"date", "pci"} and paver:
+                preferred = [logical]
+            if logical == "group":
+                # A literal group_id declares the pipeline grouping. A network ID
+                # outranks a display name only for a recognized PAVER core schema.
+                preferred = (["groupid"] if any(h.casefold() == "group_id" for h in matches) else [])
+                if paver:
+                    preferred += ["networkid"]
+            selected = []
+            for token in preferred:
+                selected = [h for h in matches if _header_key(h) == token]
+                if selected:
+                    break
+            if len(selected) == 1:
+                found[logical] = selected[0]
+                decision.update(selected=selected[0], selection="canonical_precedence")
+            else:
+                decision["selection"] = "ambiguous"
+                ambiguous = True
+            continue
         if matches:
             found[logical] = matches[0]
+            decision.update(selected=matches[0], selection="only_candidate")
+    if ambiguous:
+        raise SafeError("AMBIGUOUS_COLUMNS_USE_PRIVATE_OPTIONS")
     if not {"section", "date", "pci", "surface"} <= set(found):
         raise SafeError("UNRECOGNIZED_COLUMNS_USE_PRIVATE_OPTIONS")
     if len(set(found.values())) != len(found):
         raise SafeError("DUPLICATE_COLUMN_MAPPING")
     return found
+
+
+def normalization_map(headers: list[str], mapping: dict[str, str]) -> dict[str, str]:
+    """Preserve secondary source fields that would collide with canonical roles."""
+    rename = {source: logical for logical, source in mapping.items()}
+    for header in headers:
+        match = DEDUCT_HEADER.fullmatch(header)
+        if match:
+            code, severity = match.groups()
+            rename[header] = code + severity.upper() + " deduct"
+    # Duplicate deduct channels are a real ambiguity, not a preservation case.
+    if len(set(rename.values())) != len(rename):
+        raise SafeError("NORMALIZED_HEADERS_COLLIDE")
+    used = set(headers) | set(rename.values())
+    for header in sorted(headers):
+        if header in rename or header not in rename.values():
+            continue
+        base = "source_extra_" + header
+        candidate, suffix = base, 2
+        while candidate in used:
+            candidate = base + "_" + str(suffix)
+            suffix += 1
+        rename[header] = candidate
+        used.add(candidate)
+    return rename
 
 
 def prepare(boundary: Boundary, data: Path, options_path: Path | None = None,
@@ -119,6 +184,8 @@ def prepare(boundary: Boundary, data: Path, options_path: Path | None = None,
             raise SafeError("INPUT_CHANGED_DURING_READ")
     codes = set()
     group_strategy = None
+    mapping_report = {"schema_version": 1, "sources": [],
+                      "resolution": "For unresolved roles, set columns in a private --options JSON to exact candidate headers."}
     normalized_names = []
     for index, original in enumerate(paths, 1):
         original_hash = sha256(original)
@@ -127,22 +194,34 @@ def prepare(boundary: Boundary, data: Path, options_path: Path | None = None,
         if sha256(original) != original_hash or sha256(snapshot) != original_hash:
             raise SafeError("INPUT_CHANGED_DURING_READ")
         frame = read_table(snapshot)
+        source_headers = list(frame.columns)
         # Headers/paths are intentionally confined to the private log/report.
         print({"source": str(original), "headers": list(frame.columns)})
-        mapping = column_map(list(frame.columns), options.get("columns", {}))
-        rename = {source: logical for logical, source in mapping.items()}
+        diagnostic = {"input": str(snapshot.relative_to(boundary.workspace)), "original_path": str(original)}
+        mapping_report["sources"].append(diagnostic)
+        try:
+            mapping = column_map(list(frame.columns), options.get("columns", {}), diagnostics=diagnostic)
+        except SafeError as error:
+            diagnostic.update(status="failed", error_code=str(error))
+            diagnostic["override_template"] = {"columns": {
+                role: None for role, choice in diagnostic.get("roles", {}).items()
+                if choice["selection"] == "ambiguous"}}
+            write_json(boundary.output("column_mapping_report.json"), mapping_report)
+            raise
+        diagnostic.update(status="selected", error_code=None)
+        write_json(boundary.output("column_mapping_report.json"), mapping_report)
+        rename = normalization_map(list(frame.columns), mapping)
         for header in frame.columns:
             match = DEDUCT_HEADER.fullmatch(header)
             if match:
                 code, severity = match.groups()
-                rename[header] = code + severity.upper() + " deduct"
                 codes.add(code)
         normalized_headers = [rename.get(h, h) for h in frame.columns]
         if len(set(normalized_headers)) != len(normalized_headers):
             raise SafeError("NORMALIZED_HEADERS_COLLIDE")
         frame = frame.rename(columns=rename)
         group_source = mapping.get("group")
-        strategy = "declared_group" if group_source else "section_identity"
+        strategy = "declared_group:" + _header_key(group_source) if group_source else "section_identity"
         if group_strategy is not None and group_strategy != strategy:
             raise SafeError("MIXED_GROUPING_REQUIRES_PRIVATE_RECONCILIATION")
         group_strategy = strategy
@@ -166,6 +245,8 @@ def prepare(boundary: Boundary, data: Path, options_path: Path | None = None,
                                    "normalized": "inputs/" + filename, "normalized_sha256": sha256(normalized),
                                    "column_mapping": mapping, "deduct_header_mapping": {
                                        key: value for key, value in rename.items() if DEDUCT_HEADER.fullmatch(key)},
+                                   "column_mapping_diagnostics": diagnostic,
+                                   "normalization_mapping": {h: rename.get(h, h) for h in source_headers},
                                    "observed_deduct_columns": sorted(h for h in frame.columns if DEDUCT_HEADER.fullmatch(h)),
                                    "rows": len(frame)})
     if not codes:

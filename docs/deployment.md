@@ -152,6 +152,7 @@ Console output contains fixed codes. Consult the private `logs/runtime.log` and
 | `RESUME_INPUT_OR_CODE_CHANGED` | Choose a new output version |
 | `RESUME_OUTPUT_TAMPERED` | Investigate locally; create a new output version |
 | `FEATURE_ASSOCIATION_REVIEW_REQUIRED` | Review private feature correlations and revise the allowlist |
+| `AMBIGUOUS_COLUMNS_USE_PRIVATE_OPTIONS` | Review the private workspace's `column_mapping_report.json`; set exact candidate headers in a private `columns` override if canonical PAVER precedence cannot resolve the role |
 | `PUBLICATION_REJECTED` | Stop before push; inspect and repair the candidate locally |
 
 Never paste private logs or records into a public issue. Create a generated
