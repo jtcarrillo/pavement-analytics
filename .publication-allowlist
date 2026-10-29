@@ -29,6 +29,8 @@ src/pavement_analytics/distress.py
 src/pavement_analytics/families.py
 src/pavement_analytics/features.py
 src/pavement_analytics/full.py
+src/pavement_analytics/full_mapping.py
+src/pavement_analytics/full_preflight.py
 src/pavement_analytics/full_modeling.py
 src/pavement_analytics/io.py
 src/pavement_analytics/metrics.py
@@ -69,6 +71,8 @@ tests/test_example.py
 tests/test_families.py
 tests/test_full_modeling.py
 tests/test_full_pipeline.py
+tests/test_full_mapping.py
+tests/test_full_preflight.py
 tests/test_observations.py
 tests/test_original_climate.py
 tests/test_original_core.py

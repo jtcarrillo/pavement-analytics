@@ -83,6 +83,25 @@ class ProgressTests(unittest.TestCase):
         self.assertNotIn("raw private", result)
         self.assertIn('Reused "05_fit_curves" | previously skipped', result)
 
+    def test_setup_diagnostics_show_fixed_reasons_and_escape_mapping_paths(self):
+        self.progress({"event": "setup_issue", "role": "mapping", "status": "missing",
+                       "path": "/private/old\nmapping.json"})
+        self.progress({"event": "mapping_entry", "status": "invalid", "source_key": "input\x1b.csv",
+                       "location_value": {"secret": "PRIVATE_MARKER"},
+                       "reason": "LOCATION_VALUE_MUST_BE_NONEMPTY_STRING"})
+        self.progress({"event": "mapping_entry", "status": "normalized", "source_key": "/old/input.csv",
+                       "location_value": "/private/site.csv", "source_filename": "input.csv",
+                       "relative_location": "site.csv", "reason": "PATHS_NORMALIZED"})
+        self.progress({"event": "setup_issue", "role": "unknown", "status": "missing", "path": "PRIVATE_MARKER"})
+        result = self.console.getvalue()
+        self.assertIn('Mapping JSON not found: "/private/old\\nmapping.json"', result)
+        self.assertIn('source="input\\u001b.csv"', result)
+        self.assertIn("LOCATION_VALUE_MUST_BE_NONEMPTY_STRING", result)
+        self.assertIn('"input.csv" -> "site.csv"', result)
+        self.assertNotIn("PRIVATE_MARKER", result)
+        self.assertNotIn("\x1b", result)
+        self.assertEqual(self.log.getvalue(), result)
+
     def test_stage_stats_whitelist_reports_scientific_support_without_raw_values(self):
         events = [
             ("02_pairs_PCC", {"total_pairs": 800, "sections_total": 90}),

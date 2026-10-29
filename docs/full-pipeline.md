@@ -47,9 +47,23 @@ Legacy `datarobot` settings are recorded as ignored, including `train`.
 | ERA5 cache | Profile `cache_dir`, `--cache-dir`, or a sibling `original-era5-cache` beside run workspaces |
 
 Discovery uses the profile directory, data directory and data's parent. The
-location JSON retains its original source-filename to location-CSV mapping;
-location CSVs contain `LOCATION(DEGREES)`. Referenced location CSVs are excluded
-from inspection discovery. Locations and the CDV profile are never guessed.
+location JSON maps inspection filenames to CSV paths relative to `csv_dir`:
+
+```json
+{
+  "inspection_export.xlsx": "locations.csv"
+}
+```
+
+Location CSVs contain `LOCATION(DEGREES)`. Source keys containing a path are
+normalized to a filename only when it matches exactly one selected input;
+colliding aliases or ambiguous filenames are rejected. Absolute location CSV
+paths are accepted only within the configured `csv_dir` and are normalized to
+relative paths. Location paths cannot use parent traversal or symlinks. Setup reports
+each invalid entry's reason before `INVALID_LOCATION_MAPPING` and saves the
+entry decisions under `mapping_entries` in `full_setup_report.json`.
+Referenced location CSVs are excluded from inspection discovery. Locations and
+the CDV profile are never guessed.
 The original digitized CDV table remains a private input and is not distributed
 with this public package.
 
@@ -58,6 +72,12 @@ dates, and privately copies the selected mapping, location files and profiles.
 Original files are unchanged. Ambiguous date order requires `--date-format`.
 `full_setup_report.json` records hashes, original-to-normalized source mappings,
 date/header decisions, missing inputs and forced full-stage settings.
+Before processing, setup checks the selected mapping, location directory, CDV
+profile and any supplied deduct-curve or family profile. It lists every missing,
+wrong-type or unreadable path before `FULL_SETUP_INPUT_PATHS_INVALID`; the
+`input_checks` report entries include each role, path and status. Correct the
+selected paths in the private profile or CLI options; setup does not search for
+replacements after these checks fail.
 
 Keep the ERA5 cache outside the input directory, the run workspace and all Git
 checkouts. Safe cache paths in an existing profile are reused. If an inherited
@@ -74,8 +94,21 @@ a legacy cache setting immediately:
 pavement full "/path/to/private/data" --cache-dir "$HOME/pavement-cache/era5" --open
 ```
 
-This starts a fresh run after a setup failure; `--resume` requires completed
-setup. A compact private profile in the **parent** of the data folder can be:
+The cache boundary checks are unchanged. To reuse an existing cache inside an
+old checkout, copy it to a **new** destination outside every Git checkout, input
+directory and run workspace, then select that copy explicitly. For example,
+with generic private paths and an unused destination:
+
+```bash
+mkdir -p "/private/examples/pavement-cache"
+cp -R "/private/examples/legacy-checkout/cache/era5" "/private/examples/pavement-cache/era5"
+pavement full "/private/examples/inspection-data" --cache-dir "/private/examples/pavement-cache/era5" --open
+```
+
+This leaves the old cache in place. Use ordinary directories, not symlink aliases.
+
+After correcting a setup failure, start a fresh run; `--resume` requires
+completed setup. A compact private profile in the **parent** of the data folder can be:
 
 ```json
 {

@@ -1,7 +1,7 @@
 # Pavement Analytics
 
 Generic Python tools for Pavement Condition Index (PCI), deduct values, and PAVER
-inspection exports. Version 0.4.2 provides a runnable curation and analysis
+inspection exports. Version 0.4.3 provides a runnable curation and analysis
 foundation. All operational inputs, configuration, provenance, fitted models,
 and results belong in a separate private workspace.
 
@@ -71,6 +71,8 @@ PG, cooling, rainflow and construction-aging calculations. The final offline
 dashboard ranks target predictability and shows the best predictors per family.
 The terminal shows selected input/mapping files, stage progress and basic counts,
 with a copy in `logs/progress.log`. Add `--quiet` to suppress that terminal summary.
+Setup also lists unavailable auxiliary paths and invalid mapping entries with
+reasons; review `full_setup_report.json` before starting a new run.
 
 The command reuses a private `pavement-full.json`, `pipeline.json`, or
 `pipeline.example.json` beside the data or in its parent. Your existing location

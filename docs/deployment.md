@@ -155,6 +155,9 @@ fixed codes. Consult the private `logs/progress.log` (full runs),
 | `RESUME_OUTPUT_TAMPERED` | Investigate locally; create a new output version |
 | `FEATURE_ASSOCIATION_REVIEW_REQUIRED` | Review private feature correlations and revise the allowlist |
 | `AMBIGUOUS_COLUMNS_USE_PRIVATE_OPTIONS` | Review the private workspace's `column_mapping_report.json`; set exact candidate headers in a private `columns` override if canonical PAVER precedence cannot resolve the role |
+| `FULL_SETUP_INPUT_PATHS_INVALID` | Correct every reported missing, wrong-type or unreadable auxiliary path; `full_setup_report.json` retains the `input_checks` audit |
+| `INVALID_LOCATION_MAPPING` | Review entry reasons in the progress log and `full_setup_report.json` under `mapping_entries`; see the [mapping format and path boundaries](full-pipeline.md#required-private-inputs) |
+| `CLIMATE_CACHE_MUST_NOT_BE_VERSIONED` | Select a cache outside every Git checkout with `--cache-dir`; see the [existing-cache copy example](full-pipeline.md#required-private-inputs) |
 | `PUBLICATION_REJECTED` | Stop before push; inspect and repair the candidate locally |
 
 Never paste private logs or records into a public issue. Create a generated

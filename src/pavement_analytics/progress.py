@@ -178,6 +178,27 @@ class FullProgress:
             if event.get("report") is not None:
                 lines.append(f"  Setup report: {_quoted(event['report'])}")
             return lines
+        if kind == "setup_issue":
+            roles = {"mapping": "Mapping JSON", "csv_dir": "Location CSV directory", "cdv_curves": "CDV profile",
+                     "deduct_curves": "Deduct-curve profile", "families": "Family profile"}
+            states = {"missing": "not found", "not_file": "not a file", "not_directory": "not a directory",
+                      "unreadable": "cannot be read"}
+            if event.get("role") not in roles or event.get("status") not in states:
+                return []
+            return [f"Setup issue: {roles[event['role']]} {states[event['status']]}: {_quoted(event.get('path', ''))}"]
+        if kind == "mapping_entry":
+            status = event.get("status")
+            if status not in {"invalid", "normalized"}:
+                return []
+            label = "Invalid mapping entry" if status == "invalid" else "Normalized mapping entry"
+            source = event.get("source_key")
+            line = f"{label}: source={_quoted(source if isinstance(source, str) else '(non-string)')}"
+            if isinstance(event.get("location_value"), str):
+                line += f" | location={_quoted(event['location_value'])}"
+            line += " | " + _code(event.get("reason"), "INVALID_LOCATION_MAPPING" if status == "invalid" else "PATH_NORMALIZED")
+            if status == "normalized":
+                line += f" | {_quoted(event.get('source_filename', ''))} -> {_quoted(event.get('relative_location', ''))}"
+            return [line]
         if kind == "setup_failed":
             return ["Failed setup: " + _code(event.get("code"), "PRIVATE_SETUP_FAILED"),
                     f"  Details: {_quoted(event.get('log', ''))}"]

@@ -129,6 +129,8 @@ def prepare_full(boundary: Boundary, data: Path, config_path: Path | None = None
                  date_format: str | None = None,
                  fit_deduct_curves: bool = False, progress=None) -> dict:
     from .original.pipeline import DEFAULTS, PATH_KEYS, validate_config
+    from .full_mapping import normalize_location_mapping
+    from .full_preflight import check_setup_inputs
 
     data = external_path(data, boundary.public)
     if not data.exists() or not disjoint(data, boundary.workspace):
@@ -194,6 +196,13 @@ def prepare_full(boundary: Boundary, data: Path, config_path: Path | None = None
     _setup_files(progress, setup)
     if missing:
         raise SafeError("FULL_SETUP_REQUIRES_LOCATION_MAPPING_AND_PRIVATE_CDV_CURVES")
+    setup["input_checks"] = check_setup_inputs(cfg)
+    write_json(boundary.output("full_setup_report.json"), setup)
+    problems = [item for item in setup["input_checks"] if item["status"] != "ready"]
+    for item in problems:
+        _notify(progress, "setup_issue", **item)
+    if problems:
+        raise SafeError("FULL_SETUP_INPUT_PATHS_INVALID")
     cfg["input_dir"] = str(boundary.output("inputs"))
     cfg["output_dir"] = str(boundary.output("pipeline"))
     validate_config(cfg)
@@ -201,18 +210,23 @@ def prepare_full(boundary: Boundary, data: Path, config_path: Path | None = None
     if profile:
         _snapshot(profile, boundary.output("originals/full_profile.json"), checksums)
     source_mapping = read_json(Path(cfg["mapping"]))
-    if any(not isinstance(name, str) or Path(name).name != name or not isinstance(location, str)
-           or not location or Path(location).is_absolute() or ".." in Path(location).parts
-           for name, location in source_mapping.items()):
-        raise SafeError("INVALID_LOCATION_MAPPING")
     location_root = Path(cfg["csv_dir"])
-    location_paths = {external_path(location_root / name, boundary.public) for name in source_mapping.values()}
     if data.is_file():
         files = [data] if data.suffix.lower() in FORMATS else []
     else:
         candidates = data.rglob("*") if cfg["recursive"] else data.iterdir()
         files = sorted(p for p in candidates if p.is_file() and p.suffix.lower() in FORMATS
-                       and not p.name.startswith("~$") and p.resolve() not in location_paths)
+                       and not p.name.startswith("~$"))
+    source_mapping, mapping_audit = normalize_location_mapping(source_mapping, location_root, files, boundary.public)
+    setup["mapping_entries"] = mapping_audit
+    write_json(boundary.output("full_setup_report.json"), setup)
+    for item in mapping_audit:
+        if item["status"] != "valid":
+            _notify(progress, "mapping_entry", **item)
+    if any(item["status"] == "invalid" for item in mapping_audit):
+        raise SafeError("INVALID_LOCATION_MAPPING")
+    location_paths = {external_path(location_root / name, boundary.public) for name in source_mapping.values()}
+    files = [path for path in files if path.resolve() not in location_paths]
     if not files:
         raise SafeError("NO_INSPECTION_INPUT_FILES")
     if len({p.name for p in files}) != len(files):
