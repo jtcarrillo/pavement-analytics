@@ -57,7 +57,7 @@ def read_table(path: Path) -> pd.DataFrame:
         with path.open(encoding="utf-8-sig", newline="") as f:
             header = next(csv.reader(f, delimiter=sep), [])
         frame = pd.read_csv(path, sep=sep, dtype=str, keep_default_na=False, encoding="utf-8-sig")
-    elif path.suffix.lower() == ".xlsx":
+    elif path.suffix.lower() in {".xlsx", ".xlsm"}:
         from openpyxl import load_workbook
         book = load_workbook(path, read_only=True, data_only=True)
         try:

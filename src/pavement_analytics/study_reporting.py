@@ -15,7 +15,7 @@ import pandas as pd
 from .security import SafeError, reject_links
 
 SUMMARY_COLUMNS = [
-    "material", "target", "status", "candidate", "cv_mae", "cv_mae_std",
+    "material", "target", "original_target", "status", "candidate", "cv_mae", "cv_mae_std",
     "holdout_mae", "holdout_rmse", "holdout_r2", "baseline_mae", "mae_skill",
     "valid_target_rows", "valid_target_groups", "development_rows", "development_groups",
     "holdout_rows", "holdout_groups", "nonzero_fraction", "nonclimate_mae",
@@ -64,6 +64,11 @@ def _true(value) -> bool:
     return value is True or str(value).lower() in {"true", "1"}
 
 
+def _target_label(row: dict) -> str:
+    original = row.get("original_target")
+    return original if isinstance(original, str) and original else str(row.get("target", ""))
+
+
 def _table(headers: list[str], rows: list[list[str]]) -> str:
     return '<div class="table-wrap"><table><thead><tr>' + ''.join(
         f'<th scope="col">{_text(h)}</th>' for h in headers) + '</tr></thead><tbody>' + ''.join(
@@ -75,7 +80,9 @@ def _read(path: Path) -> pd.DataFrame:
     if not path.is_file():
         return pd.DataFrame()
     try:
-        return pd.read_csv(path, dtype={"group_id": str})
+        # Identity tokens such as NA are valid group names, not missing values.
+        # A converter preserves them without changing missing numeric metrics.
+        return pd.read_csv(path, converters={"group_id": str})
     except pd.errors.EmptyDataError:
         return pd.DataFrame()
 
@@ -183,6 +190,7 @@ def _importance_chart(frame: pd.DataFrame) -> str:
 
 
 def _coverage(audit: dict) -> str:
+    original = audit.get("task_mode") == "original_pipeline"
     climate = audit.get("climate", {})
     if not isinstance(climate, dict):
         climate = {}
@@ -212,7 +220,7 @@ def _coverage(audit: dict) -> str:
                            ("invalid_existing_features", "Invalid supplied climate features")]:
             if _finite(climate_counts.get(key)):
                 rows.append([label, _number(climate_counts[key], 0)])
-    for key, label in [("model_rows", "Inspections available to modeling"),
+    for key, label in [("model_rows", "Inspection pairs available to modeling" if original else "Inspections available to modeling"),
                        ("excluded_climate_rows", "Inspections excluded for climate coverage")]:
         if _finite(audit.get(key)):
             rows.append([label, _number(audit[key], 0)])
@@ -241,6 +249,8 @@ def _coverage(audit: dict) -> str:
     group_labels = {"climate_location": "Groups joined by shared ERA5 grid locations",
                     "declared_group": "Declared network/group identities",
                     "section_identity": "Section identities"}
+    if original and isinstance(grouping, str) and grouping not in group_labels:
+        group_labels[grouping] = _text(grouping)
     if grouping in group_labels:
         result += '<p>Validation grouping: <strong>' + group_labels[grouping] + '</strong>.'
         if _finite(partition.get("declared_groups")):
@@ -248,31 +258,55 @@ def _coverage(audit: dict) -> str:
         if _finite(partition.get("validation_groups")):
             result += ' Final validation groups: ' + _number(partition["validation_groups"], 0) + '.'
         result += '</p>'
+    if original and partition.get("grid_limitation"):
+        result += '<p class="notice">' + _text(partition["grid_limitation"]) + '</p>'
     if grouping == "section_identity":
         result += ('<p class="notice">Validation groups identify sections. Related sections may share a '
                    'network or climate location across partitions; this run does not establish performance '
                    'at new independent locations.</p>')
-    result += ('<p>Targets are observed deduct-family totals at each inspection, summed from exported '
-               'deduct channels. An unexported channel is not a confirmed zero. Different target populations '
-               'and export coverage can affect comparisons; inspect row and group counts alongside scores.</p>'
-               '<p>The intended climate window ends before the inspection. This is an '
-               'observational prediction study; importance measures predictive association, not causal impact. '
-               'Same-inspection PCI, other deduct outcomes, identities, and distress quantities are excluded '
-               'from the predictors.</p>'
-               '<p>Groups retain the same development/holdout assignment across targets. Model selection '
+    if original:
+        result += ('<p>Targets are observed deduct-family totals at the <strong>end inspection of each '
+                   'eligible original-pipeline pair</strong>. The original pairing, distress, PCI and '
+                   'Shapley preparation stages determine this population. These targets are not annual '
+                   'deduct changes. Target-specific missing values remain excluded only for that target.</p>'
+                   '<p class="notice">The original climate definitions are preserved: interval exposures, '
+                   'pavement-grade statistics and construction-aging calculations use their original '
+                   'windows. Some statistics use weather outside the inspection interval. This is '
+                   '<strong>retrospective explanatory modeling</strong>, not a prospective forecast. '
+                   'Importance measures predictive association, not causal impact.</p>'
+                   '<p>Starting-inspection predictors admitted by the original feature audit are retained. '
+                   'End-inspection outcomes and other target columns are excluded from predictors. '
+                   'Different target availability and export coverage can affect comparisons.</p>')
+    else:
+        result += ('<p>Targets are observed deduct-family totals at each inspection, summed from exported '
+                   'deduct channels. An unexported channel is not a confirmed zero. Different target populations '
+                   'and export coverage can affect comparisons; inspect row and group counts alongside scores.</p>'
+                   '<p>The intended climate window ends before the inspection. This is an '
+                   'observational prediction study; importance measures predictive association, not causal impact. '
+                   'Same-inspection PCI, other deduct outcomes, identities, and distress quantities are excluded '
+                   'from the predictors.</p>')
+    weight_note = ('Each observation is weighted by its inspection interval in days, preserving the original '
+                   'pipeline weight role.' if audit.get("metric_weighting") == "interval_days" else
+                   'Each validation group receives equal total weight.')
+    result += ('<p>Groups retain the same development/holdout assignment across targets. Model selection '
                'uses development cross-validation; holdout data are reserved for evaluation. Repeated '
-               'inspections are grouped, and each validation group receives equal total weight. '
+               'inspections are grouped. ' + weight_note + ' '
                'Comparing many targets on this holdout is exploratory; confirm the strongest results on '
                'additional independent data.</p></section>')
     return result
 
 
-def build_study_report(out: Path, summaries: list[dict], audit: dict) -> None:
+def build_study_report(out: Path, summaries: list[dict], audit: dict,
+                       model_root: Path | None = None) -> None:
     """Consolidate model tables and write a self-contained private HTML report."""
     out = Path(out)
     reject_links(out)
     if not out.is_dir():
         raise SafeError("REPORT_RUN_DIRECTORY_REQUIRED")
+    model_root = Path(model_root) if model_root is not None else out
+    reject_links(model_root)
+    if not model_root.is_dir():
+        raise SafeError("REPORT_MODEL_DIRECTORY_REQUIRED")
     seen, records, importance_tables, prediction_tables, leader_tables, cards = set(), [], [], [], [], []
     for summary in summaries:
         material, target = str(summary.get("material", "")), str(summary.get("target", ""))
@@ -286,7 +320,7 @@ def build_study_report(out: Path, summaries: list[dict], audit: dict) -> None:
         prevalence = row.get("nonzero_fraction")
         row["mostly_zero_target"] = (float(prevalence) < SPARSE_NONZERO_THRESHOLD
                                      if _finite(prevalence) else None)
-        root = _path(out, "materials", material, target)
+        root = _path(model_root, "materials", material, target)
         predictions = _read(_path(root, "holdout_predictions.csv"))
         importance = _read(_path(root, "importance.csv"))
         leaders = _read(_path(root, "leaderboard.csv"))
@@ -303,7 +337,8 @@ def build_study_report(out: Path, summaries: list[dict], audit: dict) -> None:
                 pd.to_numeric(importance.importance_mean, errors="coerce") / float(denominator)
                 if _finite(denominator) and float(denominator) > 0 else np.nan)
         reliable = _true(row.get("importance_reliable"))
-        detail = '<section class="target"><h2>' + _text(material + ' · ' + target) + '</h2>'
+        label = _target_label(row)
+        detail = '<section class="target"><h2>' + _text(material + ' · ' + label) + '</h2>'
         detail += '<p><span class="badge">' + _text(row.get("status") or 'unknown') + '</span> Model: <strong>'
         detail += _text(row.get("candidate") or '—') + '</strong>.</p>'
         detail += _table(["MAE skill", "Holdout R²", "MAE", "Baseline MAE", "Holdout rows / groups"], [[
@@ -358,7 +393,7 @@ def build_study_report(out: Path, summaries: list[dict], audit: dict) -> None:
     for filename, frame in [("target_summary.csv", summary_table), ("feature_importance.csv", importance_table),
                             ("predictions.csv", prediction_table), ("model_leaderboard.csv", leader_table)]:
         frame.to_csv(_path(out, filename), index=False)
-    overview_rows = [[str(v["material"]) + ' · ' + str(v["target"]), str(v.get("status") or '—'),
+    overview_rows = [[str(v["material"]) + ' · ' + _target_label(v), str(v.get("status") or '—'),
                       _percent(v.get("mae_skill")), _number(v.get("holdout_r2")),
                       _number(v.get("valid_target_rows"), 0) + ' / ' + _number(v.get("valid_target_groups"), 0),
                       _percent(v.get("nonzero_fraction")) + (' · mostly zero' if _true(v.get("mostly_zero_target")) else '')]
@@ -385,7 +420,7 @@ def build_study_report(out: Path, summaries: list[dict], audit: dict) -> None:
                 labels.append(str(feature["feature"]) + (' [climate]' if _true(feature["is_climate"]) else '')
                               + ' (' + _percent(feature.get("baseline_relative_importance")) + ')')
             if labels:
-                strongest.append([str(row["material"]) + ' · ' + str(row["target"]),
+                strongest.append([str(row["material"]) + ' · ' + _target_label(row),
                                   'positive holdout skill' if _true(row.get("importance_reliable")) else 'exploratory',
                                   '; '.join(labels)])
     if strongest:

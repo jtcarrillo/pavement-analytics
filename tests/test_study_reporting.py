@@ -81,6 +81,18 @@ class StudyReportingTests(unittest.TestCase):
         self.assertIn('no_valid_target', html)
         self.assertIn('Feature rankings are exploratory', html)
 
+    def test_literal_na_group_names_preserve_identity_and_group_support(self):
+        groups = ['NA', 'N/A', 'NULL']
+        self.predictions['group_id'] = groups
+        self.predictions.to_csv(self.task / 'holdout_predictions.csv', index=False)
+        build_study_report(self.out, [self.summary], {})
+        row = pd.read_csv(self.out / 'target_summary.csv').iloc[0]
+        self.assertEqual(row.holdout_groups, 3)
+        self.assertAlmostEqual(row.holdout_mae, 1.)
+        self.assertTrue(pd.isna(row.cv_mae))
+        predictions = pd.read_csv(self.out / 'predictions.csv', keep_default_na=False)
+        self.assertEqual(predictions.group_id.tolist(), groups)
+
     def test_zero_baseline_and_constant_holdout_are_undefined_not_perfect(self):
         self.predictions['actual'] = 0.
         self.predictions['prediction'] = 0.

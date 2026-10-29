@@ -1,6 +1,7 @@
 """Deduct-level searches on one shared, group-disjoint evaluation plan.
 
-All errors and permutations give each evaluation group equal total weight.
+By default errors and permutations give each evaluation group equal total weight.
+The original-pipeline adapter may explicitly supply positive interval weights.
 The saved estimators are fitted on development data only. Feature importance
 describes predictive reliance, not a causal effect; repeat variability is not
 a sampling confidence interval.
@@ -31,6 +32,17 @@ def group_weights(groups) -> np.ndarray:
     counts = values.value_counts()
     weights = values.map(lambda group: 1.0 / counts[group]).to_numpy(float)
     return weights / weights.mean()
+
+
+def _weights(table: pd.DataFrame, weight_column: str | None) -> np.ndarray:
+    if weight_column is None:
+        return group_weights(table.group_id)
+    if not isinstance(weight_column, str) or weight_column not in table:
+        raise SafeError("INVALID_STUDY_WEIGHT_COLUMN")
+    weights = pd.to_numeric(table[weight_column], errors="coerce").to_numpy(float)
+    if not np.isfinite(weights).all() or (weights <= 0).any():
+        raise SafeError("INVALID_STUDY_WEIGHTS")
+    return weights
 
 
 def _groups(table: pd.DataFrame) -> pd.Series:
@@ -234,7 +246,8 @@ def _validate_plan(table, partitions):
 
 
 def search_levels(table: pd.DataFrame, features: list[str], target: str, out: Path,
-                  partitions: pd.DataFrame, climate_features: list[str], seed: int = 42) -> dict:
+                  partitions: pd.DataFrame, climate_features: list[str], seed: int = 42,
+                  weight_column: str | None = None) -> dict:
     """Fit one target, selecting both full and climate-ablation models by CV.
 
     Material filtering belongs to the caller, but the supplied partition plan
@@ -247,6 +260,10 @@ def search_levels(table: pd.DataFrame, features: list[str], target: str, out: Pa
             or table.row_id.isna().any() or table.row_id.duplicated().any()):
         raise SafeError("INVALID_STUDY_MODEL_TABLE")
     plan, planned_folds = _validate_plan(table, partitions)
+    if weight_column is not None:
+        if weight_column in features or weight_column == target:
+            raise SafeError("STUDY_WEIGHT_MUST_NOT_BE_FEATURE_OR_TARGET")
+        _weights(table, weight_column)
     data = table.copy()
     data["group_id"] = _groups(data)
     data[target] = pd.to_numeric(data[target], errors="coerce")
@@ -270,8 +287,10 @@ def search_levels(table: pd.DataFrame, features: list[str], target: str, out: Pa
                "nonzero_fraction": float(data[target].gt(0).mean()) if len(data) else None,
                "target_std": float(data[target].std(ddof=0)) if len(data) else None,
                "folds": planned_folds, "seed": seed,
-               "selection_metric": "mean_group_balanced_cv_MAE",
-               "weighting": "Each group receives equal total weight within each evaluation set",
+               "selection_metric": "mean_group_balanced_cv_MAE" if weight_column is None else "mean_interval_weighted_cv_MAE",
+               "weight_column": weight_column,
+               "weighting": "Each group receives equal total weight within each evaluation set" if weight_column is None
+                            else "Each observation is weighted by its positive inspection interval in days",
                "importance_note": "Predictive reliance, not causation. Repeat SD is permutation variability, not a confidence interval. Correlated predictors can share importance."}
     if data.empty:
         return _write_empty(out, summary)
@@ -282,8 +301,8 @@ def search_levels(table: pd.DataFrame, features: list[str], target: str, out: Pa
         summary["status"] = "insufficient_fold_coverage"
         return _write_empty(out, summary)
     y = development[target].to_numpy(float)
-    training_weights = group_weights(development.group_id)
-    held_weights = group_weights(heldout.group_id)
+    training_weights = _weights(development, weight_column)
+    held_weights = _weights(heldout, weight_column)
     held_y = heldout[target].to_numpy(float)
     nonclimate = [feature for feature in features if feature not in climate_features]
     constant = np.ptp(y) == 0
@@ -298,8 +317,8 @@ def search_levels(table: pd.DataFrame, features: list[str], target: str, out: Pa
         for fold in range(planned_folds):
             train = development.fold.ne(fold).to_numpy()
             test = ~train
-            fold_train_weights = group_weights(development.loc[train, "group_id"])
-            fold_test_weights = group_weights(development.loc[test, "group_id"])
+            fold_train_weights = _weights(development.loc[train], weight_column)
+            fold_test_weights = _weights(development.loc[test], weight_column)
             for name, estimator in estimators.items():
                 fitted = _fit(estimator, development.loc[train, columns], y[train], fold_train_weights)
                 prediction = fitted.predict(development.loc[test, columns])
@@ -382,6 +401,7 @@ def search_levels(table: pd.DataFrame, features: list[str], target: str, out: Pa
                  "estimator": fitted, "baseline_estimator": baseline_fitted,
                  "nonclimate_features": nonclimate, "nonclimate_candidate": nonclimate_best["candidate"],
                  "nonclimate_estimator": nonclimate_fitted,
-                 "fit_partition": "development", "weighting": "equal_total_per_group"}, out / "model.joblib")
+                 "fit_partition": "development", "weight_column": weight_column,
+                 "weighting": "equal_total_per_group" if weight_column is None else "interval_days"}, out / "model.joblib")
     write_json(out / "summary.json", summary)
     return summary
