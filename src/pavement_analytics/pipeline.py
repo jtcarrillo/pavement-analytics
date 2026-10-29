@@ -133,7 +133,14 @@ def run(boundary: Boundary, config_path: Path, *, resume: bool = False) -> str:
             changes.to_csv(staging / "corrections.csv", index=False)
             rejected.to_csv(staging / "rejected_rows.csv", index=False)
             transitions.to_csv(staging / "transitions.csv", index=False)
+            write_json(staging / "pairing_report.json", {
+                "accounting": counts,
+                "rejected_reasons": {key: int(value) for key, value in rejected.reason.value_counts().items()},
+                "transition_reasons": {key: int(value) for key, value in transitions.reason.value_counts().items()},
+            })
             if pairs.empty:
+                if len(rejected) == len(corrected) and len(rejected) and rejected.reason.eq("invalid_date").all():
+                    raise SafeError("NO_VALID_DATES_CHECK_DATE_FORMAT")
                 raise SafeError("NO_VALID_PAIRS")
             profiles = read_json(curves) if curves else None
             pairs, deduct_targets = derive(pairs, config.get("deduct_families", {}), profiles)

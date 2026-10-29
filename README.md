@@ -1,7 +1,7 @@
 # Pavement Analytics
 
 Generic Python tools for Pavement Condition Index (PCI), deduct values, and PAVER
-inspection exports. Version 0.2.1 provides a runnable curation and analysis
+inspection exports. Version 0.2.2 provides a runnable curation and analysis
 foundation. All operational inputs, configuration, provenance, fitted models,
 and results belong in a separate private workspace.
 
@@ -67,6 +67,11 @@ for this command. Default predictors use starting PCI only; unsupported or
 ambiguous schemas require private overrides. Read the
 [family-analysis guide](docs/family-analysis.md) for the default family map,
 grouping assumptions, output definitions and optional predictor settings.
+
+Common dates and timestamps are normalized automatically per source. When
+month/day order cannot be resolved, supply `--date-format "%m/%d/%Y"` for
+month-first dates or `--date-format "%d/%m/%Y"` for day-first dates; include
+time directives if present. See the guide for private date and pairing diagnostics.
 
 ## Run privately
 
