@@ -49,3 +49,6 @@ tests/test_column_mapping.py
 src/pavement_analytics/dates.py
 tests/test_dates.py
 tests/test_date_setup.py
+tests/test_blank_deducts.py
+tests/test_blank_setup.py
+tests/test_ungraded_deducts.py

@@ -22,8 +22,8 @@ ALIASES = {
 }
 OPTION_KEYS = {"columns", "features", "deduct_families", "date_format", "cutoff_year",
                "min_delta_days", "max_delta_days", "folds", "seed", "holdout_fraction",
-               "association_policy", "models"}
-DEDUCT_HEADER = re.compile(r"^(\d{2})\s*([LMH])\s*deduct$", re.I)
+               "association_policy", "models", "blank_deducts"}
+DEDUCT_HEADER = re.compile(r"^(\d{2})\s*([LMH]?)\s*deduct$", re.I)
 
 
 def new_workspace(explicit: Path | None = None) -> Path:
@@ -156,7 +156,8 @@ def normalization_map(headers: list[str], mapping: dict[str, str]) -> dict[str, 
 
 
 def prepare(boundary: Boundary, data: Path, options_path: Path | None = None,
-            *, by_code: bool = False, date_format: str | None = None) -> Path:
+            *, by_code: bool = False, date_format: str | None = None,
+            blank_deducts: str | None = None) -> Path:
     """Snapshot sources and write normalized inputs/config; originals stay intact."""
     paths = input_files(data, boundary.public, boundary.workspace)
     options = {}
@@ -176,6 +177,12 @@ def prepare(boundary: Boundary, data: Path, options_path: Path | None = None,
     if "date_format" in options and (not isinstance(options["date_format"], str)
                                        or not options["date_format"].strip()):
         raise SafeError("INVALID_DATE_FORMAT")
+    if blank_deducts is not None:
+        if "blank_deducts" in options and options["blank_deducts"] != blank_deducts:
+            raise SafeError("BLANK_DEDUCT_OPTIONS_CONFLICT")
+        options["blank_deducts"] = blank_deducts
+    if options.get("blank_deducts", "missing") not in ("missing", "zero"):
+        raise SafeError("INVALID_BLANK_DEDUCT_POLICY")
     if by_code and "deduct_families" in options:
         raise SafeError("FAMILY_OPTIONS_CONFLICT")
     original_dir = boundary.output("originals")
@@ -281,6 +288,8 @@ def prepare(boundary: Boundary, data: Path, options_path: Path | None = None,
                                    "date_parsing": date_diagnostic,
                                    "normalization_mapping": {h: rename.get(h, h) for h in source_headers},
                                    "observed_deduct_columns": sorted(h for h in frame.columns if DEDUCT_HEADER.fullmatch(h)),
+                                   "ungraded_deduct_columns": sorted(h for h in frame.columns
+                                       if (match := DEDUCT_HEADER.fullmatch(h)) and not match.group(2)),
                                    "rows": len(frame)})
     if not codes:
         raise SafeError("NO_RECOGNIZED_DEDUCT_COLUMNS")
@@ -293,12 +302,14 @@ def prepare(boundary: Boundary, data: Path, options_path: Path | None = None,
               "output": "results", "setup_report": "setup_report.json", "columns": {key: key for key in ALIASES},
               "features": ["PCI_start"], "deduct_families": families,
               "models": True, "min_delta_days": 365, "folds": 5, "seed": 42,
-              "holdout_fraction": 0.2, "date_format": "%Y-%m-%d", "association_policy": "fail"}
+              "holdout_fraction": 0.2, "date_format": "%Y-%m-%d", "association_policy": "fail",
+              "blank_deducts": "missing"}
     config.update({key: value for key, value in options.items() if key != "columns"})
     report["deduct_codes"] = sorted(codes)
     report["deduct_families"] = config["deduct_families"]
     report["features"] = config["features"]
     report["date_format"] = config["date_format"]
+    report["blank_deducts"] = config["blank_deducts"]
     report["coverage_warning"] = (
         "Family totals use exported deduct columns only. A missing code/severity column is not a confirmed zero. "
         "Exports may cover different columns; inspect observed_deduct_columns for every source before comparing results.")
@@ -310,7 +321,9 @@ def prepare(boundary: Boundary, data: Path, options_path: Path | None = None,
 
 
 def analyze(boundary: Boundary, data: Path, options_path: Path | None = None,
-            *, by_code: bool = False, date_format: str | None = None) -> str:
+            *, by_code: bool = False, date_format: str | None = None,
+            blank_deducts: str | None = None) -> str:
     from .pipeline import run
-    config = prepare(boundary, data, options_path, by_code=by_code, date_format=date_format)
+    config = prepare(boundary, data, options_path, by_code=by_code, date_format=date_format,
+                     blank_deducts=blank_deducts)
     return run(boundary, config)

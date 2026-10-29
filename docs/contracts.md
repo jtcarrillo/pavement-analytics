@@ -20,6 +20,7 @@ JSON keys are rejected. Relative paths resolve from the configuration file.
 | `date_format` | `%Y-%m-%d`; set an explicit format for different CSV dates |
 | `corrections` | Optional private correction table |
 | `deduct_families` | Mapping from generic family labels to disjoint two-digit distress codes |
+| `blank_deducts` | `missing`; explicit `zero` when empty exported deduct cells mean absent distress |
 | `curve_profiles` | Optional private JSON mapping material labels to approved curve profiles |
 | `models` | `true`; set false for curation/ranking only |
 | `folds` | `5` development folds |
@@ -74,11 +75,30 @@ accepted = initial anchors + considered transitions.
 
 ## Deducts and PCI
 
-Recognized source deduct headers have a two-digit code, L/M/H severity, and the
-word `deduct`. They become start/end deduct columns after pairing. Deducts must be
-finite and within 0-100. Missing or invalid entries are not silently converted to
-zero. An export gap is flagged when recorded PCI is below 99.5 and all available
+Recognized source deduct headers have a two-digit code, optional L/M/H severity,
+and the word `deduct`. They become start/end deduct columns after pairing. Deducts must be
+finite and within 0-100. By default, missing or invalid entries are not converted
+to zero. With explicit `blank_deducts: "zero"`, only empty/whitespace or null cells
+in recognized, exported deduct columns become zero before numeric conversion.
+Nonnumeric text (including `NaN` and `N/A`), infinities and out-of-range values
+remain invalid. Unexported channels are never fabricated. Original snapshots and
+normalized inputs retain their source values; the derived pair dataset records
+the effective values and blank/fill counts. Audit columns are blocked from
+predictors. An export gap is flagged when recorded PCI is below 99.5 and all available
 deducts are zero, or deduct information is invalid/missing.
+
+The conservative rule still excludes every deduct-family target for a pair if
+either endpoint has an invalid exported deduct or an export gap. PCI-rate targets
+are retained. `deduct_audit.json` reports the selected blank policy, pair-endpoint
+cell counts, exclusion flags and per-target availability. These counts may repeat
+an inspection shared by consecutive pairs and are not unique input-cell counts.
+
+Ungraded `NN deduct` values contribute to the same code's family as graded
+channels. If an inspection has a positive ungraded value and any positive graded
+value for the same code, their relationship cannot be inferred. It is marked
+`ambiguous_deduct`, also invalid, and excluded from all deduct-family targets.
+The exporter must be reconciled privately; overlapping values are never silently
+summed. A zero-valued alternative channel does not create this ambiguity.
 
 Family growth is `(family_end - family_start) * 365 / delta_days`, positive for
 deduct growth. Gap rows remain in the PCI-rate task and have missing deduct targets;

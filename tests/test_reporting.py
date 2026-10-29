@@ -84,7 +84,10 @@ class ReportingTests(unittest.TestCase):
     def test_empty_report_and_symlink_rejected(self):
         build_report(self.root, [], {})
         self.assertEqual(len(pd.read_csv(self.root / 'predictions.csv')), 0)
-        self.assertIn('No target tasks were recorded', (self.root / 'dashboard.html').read_text())
+        html = (self.root / 'dashboard.html').read_text()
+        self.assertIn('No target tasks were recorded', html)
+        self.assertNotIn('Deduct target availability', html)
+        self.assertNotIn('synthetic run', html)
         destination = self.root / 'target_summary.csv'
         destination.unlink()
         destination.symlink_to(self.root / 'dataset.csv')
@@ -103,6 +106,63 @@ class ReportingTests(unittest.TestCase):
         self.assertIn('Section-level grouping', html)
         self.assertIn('63L deduct', html)
         self.assertIn('&lt;img&gt;.csv', html)
+        self.assertNotIn('<img>', html)
+
+    def test_zero_policy_and_endpoint_audit_counts_are_visible(self):
+        audit = {"schema_version": 1, "blank_deducts": "zero", "pair_rows": 4,
+                 "blank_deduct_cells": {"start": 12, "end": 10},
+                 "zero_filled_deduct_cells": {"start": 12, "end": 10},
+                 "invalid_deduct_pairs": {"start": 0, "end": 1},
+                 "export_gap_pairs": {"start": 0, "end": 1, "either": 1},
+                 "targets": [{"material": "AC", "target": self.target,
+                              "valid_target_rows": 3, "excluded_missing_target": 1}]}
+        (self.root / 'deduct_audit.json').write_text(json.dumps(audit))
+        build_report(self.root, [self.slot], {})
+        html = (self.root / 'dashboard.html').read_text()
+        self.assertIn('Deduct target availability', html)
+        self.assertIn('Blank deduct policy: zero', html)
+        self.assertIn('Empty exported deduct cells were explicitly treated as zero', html)
+        self.assertIn('<td>Empty deduct cells treated as zero</td><td>12</td><td>10</td>', html)
+        self.assertIn('An inspection shared by consecutive pairs is counted again', html)
+        self.assertIn('href="deduct_audit.json"', html)
+        self.assertNotIn('All deduct-family tasks have zero valid target rows', html)
+        self.assertIn('skipped before fitting', html)
+        self.assertIn('condition baseline retained', html)
+
+    def test_missing_policy_explains_all_skipped_deduct_targets_and_escapes_headers(self):
+        audit = {"blank_deducts": "missing", "targets": [
+            {"material": "AC", "target": "rate_first", "valid_target_rows": 0},
+            {"material": "PCC", "target": "rate_second", "valid_target_rows": 0}],
+            "ignored_ungraded_deduct_columns": ["<img src=x onerror=alert(1)> deduct"]}
+        (self.root / 'deduct_audit.json').write_text(json.dumps(audit))
+        slots = [{"material": target["material"], "target": target["target"], "status": "no_valid_target"}
+                 for target in audit["targets"]]
+        build_report(self.root, slots, {})
+        html = (self.root / 'dashboard.html').read_text()
+        self.assertIn('Blank deduct policy: missing', html)
+        self.assertIn('kept as missing and can exclude deduct targets', html)
+        self.assertIn('All deduct-family tasks have zero valid target rows', html)
+        self.assertIn('Model fitting was skipped for these tasks', html)
+        self.assertIn('&lt;img src=x onerror=alert(1)&gt; deduct', html)
+        self.assertNotIn('<img', html)
+
+    def test_empty_deduct_audit_does_not_claim_all_targets_were_skipped(self):
+        (self.root / 'deduct_audit.json').write_text(json.dumps({"blank_deducts": "missing", "targets": []}))
+        build_report(self.root, [], {})
+        html = (self.root / 'dashboard.html').read_text()
+        self.assertIn('Deduct target availability', html)
+        self.assertNotIn('All deduct-family tasks have zero valid target rows', html)
+
+    def test_ungraded_deduct_coverage_and_overlap_counts_are_visible(self):
+        audit = {"blank_deducts": "zero", "ambiguous_deduct_pairs": {"start": 2, "end": 1},
+                 "ungraded_deduct_columns": ["49 deduct", "<img> deduct"], "targets": []}
+        (self.root / 'deduct_audit.json').write_text(json.dumps(audit))
+        build_report(self.root, [], {})
+        html = (self.root / 'dashboard.html').read_text()
+        self.assertIn('Recognized deduct columns without an L/M/H severity: 49 deduct, &lt;img&gt; deduct', html)
+        self.assertIn('<td>Pairs with overlapping deduct representations</td><td>2</td><td>1</td>', html)
+        self.assertIn('Positive ungraded and severity values for the same code require reconciliation', html)
+        self.assertNotIn('were excluded from family sums', html)
         self.assertNotIn('<img>', html)
 
     def test_chart_is_capped_but_predictions_export_is_complete(self):

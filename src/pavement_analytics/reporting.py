@@ -138,6 +138,51 @@ def _setup_notes(root: Path) -> str:
     notes += '<p><a class="private-link" href="setup_report.json">Full private setup report</a></p></details></section>'
     return notes
 
+
+def _deduct_notes(root: Path) -> str:
+    path = _file(root, "deduct_audit.json")
+    if not path.is_file():
+        return ""
+    audit = read_json(path)
+    notes = '<section class="overview"><h2>Deduct target availability</h2>'
+    policy = audit.get("blank_deducts", "missing")
+    explanation = {
+        "zero": "Empty exported deduct cells were explicitly treated as zero.",
+        "missing": "Empty exported deduct cells were kept as missing and can exclude deduct targets.",
+    }.get(policy, "See the deduct audit for the blank-cell policy.")
+    notes += '<p><strong>Blank deduct policy: ' + _text(policy) + '.</strong> ' + _text(explanation) + '</p>'
+    targets = audit.get("targets", [])
+    if targets and all(target.get("valid_target_rows", 0) == 0 for target in targets):
+        notes += ('<p class="empty"><strong>All deduct-family tasks have zero valid target rows.</strong> '
+                  'Model fitting was skipped for these tasks. Review the blank-cell policy and audit counts below.</p>')
+    rows = []
+    for key, label in (
+        ("blank_deduct_cells", "Empty deduct cells"),
+        ("zero_filled_deduct_cells", "Empty deduct cells treated as zero"),
+        ("invalid_deduct_pairs", "Pairs with invalid deducts"),
+        ("ambiguous_deduct_pairs", "Pairs with overlapping deduct representations"),
+        ("export_gap_pairs", "Pairs with a deduct export gap"),
+    ):
+        counts = audit.get(key, {})
+        rows.append([label, _number(counts.get("start"), 0), _number(counts.get("end"), 0)])
+    notes += _table(["Measure", "Start endpoint", "End endpoint"], rows)
+    notes += ('<p class="caption">Counts describe endpoints of the retained inspection pairs. '
+              'An inspection shared by consecutive pairs is counted again. '
+              'A blank-as-zero policy does not fill unexported columns or repair malformed values.</p>')
+    ungraded = audit.get("ungraded_deduct_columns", [])
+    if ungraded:
+        notes += ('<p>Recognized deduct columns without an L/M/H severity: '
+                  + _text(', '.join(map(str, ungraded))) + '. '
+                  'Positive ungraded and severity values for the same code require reconciliation; '
+                  'affected pairs are excluded rather than adding potentially overlapping values.</p>')
+    ignored = audit.get("ignored_ungraded_deduct_columns", [])
+    if ignored:
+        notes += ('<p>Deduct columns without an L/M/H severity were excluded from family sums: '
+                  + _text(', '.join(map(str, ignored))) + '.</p>')
+    notes += '<p><a class="private-link" href="deduct_audit.json">Full private deduct audit</a></p></section>'
+    return notes
+
+
 def build_report(run_dir: Path, slots: list[dict], accounting: dict) -> None:
     """Write four consolidated artifacts inside an existing private run directory.
 
@@ -209,7 +254,7 @@ def build_report(run_dir: Path, slots: list[dict], accounting: dict) -> None:
         candidate = str(row.get("candidate") or "—")
         explanation = {
             "no_model": "No candidate met the development-CV improvement rule. The condition baseline was retained.",
-            "no_valid_target": "No valid observations for this target; check target availability and deduct audit flags.",
+            "no_valid_target": "Model fitting was skipped because no valid observations remained for this target; check target availability and deduct audit flags.",
             "insufficient_groups": "Too few independent groups for both development folds and a reserved holdout.",
             "modeling_disabled": "Model fitting was disabled for this run.",
             "champion": "Candidate selected using development cross-validation; assessed on reserved groups below.",
@@ -249,18 +294,22 @@ def build_report(run_dir: Path, slots: list[dict], accounting: dict) -> None:
                    _number(r.get("valid_target_rows"), 0), _number(r.get("holdout_wMAE")),
                    _number(r.get("condition_wMAE")), _number(r.get("improvement_percent"), 1)] for r in summaries]
     setup_notes = _setup_notes(run_dir)
+    deduct_notes = _deduct_notes(run_dir)
     html = _HTML_START + f'''<header><p class="eyebrow">PRIVATE ANALYSIS · OFFLINE REPORT</p>
 <h1>Deduct family results</h1><p class="intro">Compare each material and target, inspect independent holdout accuracy,
 and trace every result to the consolidated tables.</p><nav><a href="target_summary.csv">Target summary CSV</a>
 <a href="model_leaderboard.csv">CV leaderboard CSV</a><a href="predictions.csv">Full predictions CSV</a>
 <a href="run_report.json">Run report</a></nav></header><main>
 <section class="overview"><h2>Run overview</h2><div class="counts">{counts_html or '<span>No target tasks</span>'}</div>
+<p class="caption"><strong>no_valid_target:</strong> skipped before fitting.
+<strong>no_model:</strong> condition baseline retained.
+<strong>champion:</strong> candidate selected by development cross-validation; inspect its holdout results.</p>
 <p>Deduct targets measure annual change in summed family deducts (positive means growth). PCI-rate deterioration is negative.
 Errors are weighted by interval days. Scores from different families or heldout populations are not directly interchangeable.</p>
-<p>Outputs remain private. This report makes no network requests. No operational accuracy claim follows from a synthetic run.</p>
+<p>Outputs remain private. This report makes no network requests.</p>
 <details><summary>Inspection accounting</summary>{_table(['Measure', 'Count'], accounting_rows)}</details>
 <details><summary>All target metrics</summary>{_table(['Material', 'Target', 'Status', 'Valid rows', 'Holdout wMAE', 'Condition wMAE', 'Improvement %'], table_rows)}</details></section>
-{setup_notes}<div class="filters"><label>Material <select id="material">{options}</select></label>
+{deduct_notes}{setup_notes}<div class="filters"><label>Material <select id="material">{options}</select></label>
 <label>Find target <input id="target" type="search" placeholder="Filter by target name"></label>
 <span id="visible" aria-live="polite"></span></div><div id="tasks">{''.join(cards) or '<p class="empty">No target tasks were recorded.</p>'}</div>
 <p id="no-match" hidden>No targets match these filters.</p>

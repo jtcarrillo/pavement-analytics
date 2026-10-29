@@ -90,7 +90,7 @@ include these choices and the complete original-to-normalized header mapping in
 template with an exact candidate header in a private options file and rerun with
 `--options`. Keep these diagnostics private.
 
-Every recognized two-digit distress code and L/M/H deduct column is included.
+Recognized two-digit distress codes include both L/M/H and ungraded deduct columns.
 The following editable analytical groupings are defaults, not standardized causal
 attributions. Family names describe hypotheses rather than diagnoses.
 
@@ -113,13 +113,44 @@ every observed code individually instead. All configured families get a task
 status for each observed material; absent families are not invented zero targets.
 
 For each family, the target is `(sum_end - sum_start) * 365 / delta_days`, in
-deduct points per year. L/M/H are summed. Sums cover columns actually exported by
+deduct points per year. L/M/H and ungraded channels are summed subject to the
+same-code overlap check below. Sums cover columns actually exported by
 each source; confirm equivalent family inventories before comparing sources.
-The private setup report records the exact columns. Blank or invalid exported
-values are not assumed zero. Export gaps exclude deduct targets but retain the
+The private setup report records the exact columns. By default, blank or invalid
+exported values are not assumed zero. Export gaps exclude deduct targets but retain the
 PCI-rate task. Columns structurally absent from another file do not invalidate
 the current source. These sums are not corrected PCI contributions or Shapley
 attributions, and no correction curves are required for this workflow.
+
+If empty exported deduct cells mean absent distress in your source, declare that
+policy explicitly:
+
+```bash
+pavement analyze "/path/to/private/data" --blank-deducts zero --open
+```
+
+The equivalent private options key is `blank_deducts` with value `zero`;
+`missing` is the default. A CLI value and an options value must agree when both
+are supplied. The zero policy applies only to blank/whitespace cells in recognized
+exported deduct channels. It does not fill columns absent from a source, invent
+absent families, or repair text such as `N/A`, infinities, or values outside 0–100.
+Original snapshots and normalized inputs are unchanged by this policy. Converted
+values and per-endpoint blank/fill counts appear in the derived pair dataset.
+
+Any remaining invalid exported deduct excludes every family for that pair under
+the conservative validation rule. A low-PCI inspection with all recognized
+deducts zero still triggers the existing export-gap rule. Inspect
+`results/deduct_audit.json` and the dashboard's availability section for the
+policy, cell counts, exclusions, and per-target coverage. Counts refer to retained
+pair endpoints; an inspection shared by two consecutive pairs is counted twice.
+Ungraded headers such as `73 deduct` are recognized and listed in the audit.
+When an inspection has positive ungraded and graded values for the same code,
+their relationship is ambiguous: they could double count a deduction. That
+inspection is flagged, and pairs touching it are excluded from deduct targets
+until the source is reconciled privately. The pipeline does not guess that an
+ungraded value is a separate severity or a redundant total. Zero-valued alternative
+channels do not trigger the overlap flag. Source inventories may still differ;
+review coverage before comparing family sums.
 
 The default predictor is **starting PCI only**. Mean and condition baselines,
 ElasticNet and RandomForest are compared using grouped cross-validation. This
@@ -162,6 +193,7 @@ in force after dates are accepted.
 | `results/materials/` | Detailed per-target models, predictions, folds and summaries |
 | `results/run_report.json` | Inspection accounting and target outcomes |
 | `results/pairing_report.json` | Inspection accounting and rejection/transition reason totals |
+| `results/deduct_audit.json` | Blank policy, fill/exclusion/overlap counts, ungraded headers and family-target availability |
 | `results/setup_report.json` | Input inventory, mappings, features, grouping and source hashes |
 | `results/manifest.json` | Reproducibility fingerprints and output checksums |
 | `run.json`, `inputs/`, `originals/` | Generated configuration, normalized inputs and unchanged source snapshots |
@@ -172,6 +204,12 @@ baseline error has no defined percentage improvement. Inspect coverage and
 per-target results instead of ranking unrelated target scales by raw error.
 Scatters may be capped for rendering; exported prediction tables remain complete.
 The dashboard is self-contained and makes no external network requests.
+
+`no_valid_target` means no usable observations remained and fitting was skipped.
+`no_model` means candidates were evaluated but the condition baseline was retained.
+`champion` means a candidate passed the development-CV selection rule; consult its
+held-out errors for performance. A completed dashboard can therefore still contain
+unavailable family tasks.
 
 All generated files, including synthetic inputs/results, remain outside the public
 repository. Never upload the dashboard, logs, fitted models or exports to public
@@ -188,7 +226,7 @@ pavement analyze "/path/to/private/data" --options "/path/to/private/options.jso
 
 Options accept `columns` (logical role to original source header), `features`
 (post-normalization pair-table names, including `PCI_start`), `deduct_families`,
-`date_format`, `cutoff_year`, `min_delta_days`, `max_delta_days`, `folds`, `seed`,
+`date_format`, `blank_deducts`, `cutoff_year`, `min_delta_days`, `max_delta_days`, `folds`, `seed`,
 `holdout_fraction`, `association_policy`, and `models`. Unknown options fail.
 Column overrides apply to each file. Core headers normalize to section, date,
 pci, surface, group and construction; other predictor headers remain unchanged

@@ -7,6 +7,7 @@ import hashlib
 import importlib.metadata
 import json
 import os
+import re
 import sys
 from pathlib import Path
 import shutil
@@ -27,7 +28,7 @@ from .security import Boundary, SafeError, disjoint, lock, refuse_public_executi
 ALLOWED = {"schema_version", "input_root", "input_files", "output", "columns", "cutoff_year",
            "min_delta_days", "max_delta_days", "date_format", "corrections", "features",
            "deduct_families", "curve_profiles", "models", "folds", "seed", "holdout_fraction",
-           "association_policy", "setup_report"}
+           "association_policy", "setup_report", "blank_deducts"}
 
 
 def validate_config(config: dict) -> None:
@@ -57,6 +58,8 @@ def validate_config(config: dict) -> None:
         raise SafeError("INVALID_ASSOCIATION_POLICY")
     if "PCI_start" not in config["features"]:
         raise SafeError("CONDITION_FEATURE_REQUIRED")
+    if config.get("blank_deducts", "missing") not in ("missing", "zero"):
+        raise SafeError("INVALID_BLANK_DEDUCT_POLICY")
 
 
 def environment_versions() -> dict:
@@ -143,7 +146,30 @@ def run(boundary: Boundary, config_path: Path, *, resume: bool = False) -> str:
                     raise SafeError("NO_VALID_DATES_CHECK_DATE_FORMAT")
                 raise SafeError("NO_VALID_PAIRS")
             profiles = read_json(curves) if curves else None
-            pairs, deduct_targets = derive(pairs, config.get("deduct_families", {}), profiles)
+            blank_deducts = config.get("blank_deducts", "missing")
+            pairs, deduct_targets = derive(pairs, config.get("deduct_families", {}), profiles,
+                                          blank_deducts=blank_deducts)
+            write_json(staging / "deduct_audit.json", {
+                "schema_version": 1, "blank_deducts": blank_deducts, "pair_rows": len(pairs),
+                "blank_deduct_cells": {end: int(pairs[f"blank_deduct_cells_{end}"].sum())
+                                       for end in ("start", "end")},
+                "zero_filled_deduct_cells": {end: int(pairs[f"zero_filled_deduct_cells_{end}"].sum())
+                                             for end in ("start", "end")},
+                "invalid_deduct_pairs": {end: int(pairs[f"invalid_deduct_{end}"].sum())
+                                         for end in ("start", "end")},
+                "ambiguous_deduct_pairs": {end: int(pairs[f"ambiguous_deduct_{end}"].sum())
+                                           for end in ("start", "end")},
+                "export_gap_pairs": {
+                    **{end: int(pairs[f"export_gap_{end}"].sum()) for end in ("start", "end")},
+                    "either": int((pairs.export_gap_start | pairs.export_gap_end).sum())},
+                "targets": [
+                    {"material": material, "target": target,
+                     "valid_target_rows": int(np.isfinite(subset[target]).sum()),
+                     "excluded_missing_target": int((~np.isfinite(subset[target])).sum())}
+                    for material, subset in pairs.groupby("material", sort=True) for target in deduct_targets],
+                "ungraded_deduct_columns": sorted(
+                    c for c in corrected if re.fullmatch(r"\d{2}\s+deduct", c, re.I)),
+            })
             pairs.to_csv(staging / "dataset.csv", index=False)
             rank(pairs).to_csv(staging / "rankings.csv", index=False)
             features, audit = build(pairs, config["features"], ["DetRatePerYear", *deduct_targets], config["columns"])

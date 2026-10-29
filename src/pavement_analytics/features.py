@@ -10,13 +10,15 @@ import pandas as pd
 from .security import SafeError
 
 IDENTITY = re.compile(r"(?:^_|source|partition|(?:^|[_\s])(?:id|name|group|section|network|branch)(?:$|[_\s])|uniqueid)", re.I)
-OUTCOME = re.compile(r"(?:_end$|_delta$|^delta|end_date|intervalend|intervalyears|emerged|regressed|resolved|persistent|^loss_|^pci_only|^pci_calc|^pci_diff|^export_gap|^invalid_deduct|^rate_|^DetRate)", re.I)
+OUTCOME = re.compile(r"(?:_end$|_delta$|^delta|end_date|intervalend|intervalyears|emerged|regressed|resolved|persistent|^loss_|^pci_only|^pci_calc|^pci_diff|^export_gap|^invalid_deduct|^ambiguous_deduct|^rate_|^DetRate)", re.I)
 CUMULATIVE = re.compile(r"^(?:CoolEvents6h|RainflowCycles10C|RainflowCycles20C|RainflowDamage|PGWindowYears)(?:_start)?$", re.I)
 GEO = re.compile(r"latitude|longitude|location|coordinate|(?:^|_)lat(?:_|$)|(?:^|_)lon(?:_|$)", re.I)
-DISTRESS = re.compile(r"^\d{2}[LMH]|^family_", re.I)
+DISTRESS = re.compile(r"^\d{2}(?:[LMH]|\s*(?:deduct(?:_|$)|\())|^family_", re.I)
 
 
 def disposition(column: str, allow: set[str], targets: set[str], identity_columns: set[str]) -> str:
+    if column.startswith(("blank_deduct_cells_", "zero_filled_deduct_cells_")):
+        return "DROP_PROVENANCE"
     if column in targets:
         return "TARGET"
     if column == "delta_days":
