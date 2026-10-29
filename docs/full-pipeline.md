@@ -59,7 +59,22 @@ Original files are unchanged. Ambiguous date order requires `--date-format`.
 date/header decisions, missing inputs and forced full-stage settings.
 
 Keep the ERA5 cache outside the input directory, the run workspace and all Git
-checkouts. A compact private profile in the **parent** of the data folder can be:
+checkouts. Safe cache paths in an existing profile are reused. If an inherited
+profile points inside a checkout, overlaps the inputs/run/source tree, uses a
+symlink, or names a file, setup selects the external default instead. It records
+the requested path, selected path and reason under `climate_cache` in
+`full_setup_report.json`. The old cache and profile are left untouched; cached
+weather is not copied automatically.
+
+An explicit `--cache-dir` takes precedence and must itself be safe. To override
+a legacy cache setting immediately:
+
+```bash
+pavement full "/path/to/private/data" --cache-dir "$HOME/pavement-cache/era5" --open
+```
+
+This starts a fresh run after a setup failure; `--resume` requires completed
+setup. A compact private profile in the **parent** of the data folder can be:
 
 ```json
 {
