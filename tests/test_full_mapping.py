@@ -63,6 +63,33 @@ class FullMappingTests(unittest.TestCase):
         mapping, _ = self.assert_invalid({"inspection_a.xlsx": "site_a.csv"}, sources=duplicate_sources)
         self.assertEqual(mapping, {})
 
+    def test_declared_location_file_does_not_make_source_basename_ambiguous(self):
+        source = self.raw / "inspection.csv"
+        source.write_text("generated inspection fixture")
+        location = self.locations / "inspection.csv"
+        location.write_text('LOCATION(DEGREES)\n"0, 1"\n')
+        for key in ("inspection.csv", "old/path/inspection.csv"):
+            for value in ("inspection.csv", str(location)):
+                with self.subTest(key=key, value=value):
+                    mapping, audit = self.normalize({key: value}, sources=[source, location])
+                    self.assertEqual(mapping, {"inspection.csv": "inspection.csv"})
+                    self.assertEqual(len(audit), 1)
+                    self.assertIn(audit[0]["status"], {"valid", "normalized"})
+
+    def test_unsafe_location_does_not_remove_an_ambiguous_source(self):
+        source = self.raw / "inspection.csv"
+        source.write_text("generated inspection fixture")
+        outside = self.root / "other" / "inspection.csv"
+        outside.parent.mkdir()
+        outside.write_text("generated second inspection fixture")
+        for value in (str(outside), "../other/inspection.csv"):
+            with self.subTest(value=value):
+                mapping, audit = self.assert_invalid(
+                    {"unused.csv": value, "old/path/inspection.csv": "site_a.csv"},
+                    sources=[source, outside])
+                self.assertEqual(mapping, {})
+                self.assertEqual([row["status"] for row in audit], ["invalid", "invalid"])
+
     def test_normalized_source_collisions_never_silently_choose_a_location(self):
         for other in ("site_a.csv", "nested/site_b.csv"):
             with self.subTest(other=other):

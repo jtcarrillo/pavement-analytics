@@ -20,6 +20,28 @@ def _record(source=None, location=None):
             "status": "invalid", "reason": None}
 
 
+def _location_path(location, root: Path | None, root_error, public: Path):
+    if not isinstance(location, str) or not location.strip() or "\0" in location:
+        return None, "LOCATION_VALUE_MUST_BE_NONEMPTY_STRING"
+    if root_error:
+        return None, root_error
+    try:
+        location_path = Path(location).expanduser()
+        if ".." in location_path.parts:
+            return None, "LOCATION_PARENT_COMPONENT_FORBIDDEN"
+        candidate = location_path if location_path.is_absolute() else root / location_path
+        resolved = external_path(candidate, public)
+        if resolved == root or not resolved.is_relative_to(root):
+            return None, "LOCATION_PATH_OUTSIDE_DECLARED_DIRECTORY"
+        if resolved.is_dir():
+            return None, "LOCATION_PATH_MUST_IDENTIFY_FILE"
+        return resolved, None
+    except SafeError as error:
+        return None, str(error)
+    except (OSError, ValueError, RuntimeError):
+        return None, "LOCATION_PATH_INVALID"
+
+
 def normalize_location_mapping(payload, location_root: Path,
                                source_files: list[Path], public: Path) -> tuple[dict[str, str], list[dict]]:
     """Return normalized mappings plus every entry's validation decision.
@@ -35,7 +57,6 @@ def normalize_location_mapping(payload, location_root: Path,
         item = _record()
         item["reason"] = "MAPPING_MUST_BE_FILENAME_TO_LOCATION_OBJECT"
         return {}, [item]
-    counts = Counter(Path(path).name for path in source_files)
     normalized, audit, names = {}, [], {}
     try:
         root = external_path(Path(location_root), Path(public))
@@ -44,6 +65,20 @@ def normalize_location_mapping(payload, location_root: Path,
         root, root_error = None, str(error)
     except (OSError, ValueError, RuntimeError):
         root, root_error = None, "LOCATION_DIRECTORY_PATH_INVALID"
+
+    locations = {source: _location_path(location, root, root_error, Path(public))
+                 for source, location in payload.items()}
+    declared_locations = {path for path, error in locations.values() if error is None}
+    counts = Counter()
+    for path in source_files:
+        # Recursive discovery may also find the declared location CSVs. Only
+        # safely resolved mapping values can remove files from source matching.
+        try:
+            if external_path(Path(path), Path(public)) in declared_locations:
+                continue
+        except (SafeError, OSError, ValueError, RuntimeError):
+            pass
+        counts[Path(path).name] += 1
 
     for source, location in payload.items():
         item = _record(source, location)
@@ -73,33 +108,11 @@ def normalize_location_mapping(payload, location_root: Path,
             normalized.pop(name, None)
             continue
         names[name] = item
-        if not isinstance(location, str) or not location.strip() or "\0" in location:
-            item["reason"] = "LOCATION_VALUE_MUST_BE_NONEMPTY_STRING"
+        resolved, location_error = locations[source]
+        if location_error:
+            item["reason"] = location_error
             continue
-        if root_error:
-            item["reason"] = root_error
-            continue
-        try:
-            location_path = Path(location).expanduser()
-            if ".." in location_path.parts:
-                item["reason"] = "LOCATION_PARENT_COMPONENT_FORBIDDEN"
-                continue
-            candidate = location_path if location_path.is_absolute() else root / location_path
-            # Reject links before resolve, and retain the public-source boundary.
-            resolved = external_path(candidate, Path(public))
-            if resolved == root or not resolved.is_relative_to(root):
-                item["reason"] = "LOCATION_PATH_OUTSIDE_DECLARED_DIRECTORY"
-                continue
-            if resolved.is_dir():
-                item["reason"] = "LOCATION_PATH_MUST_IDENTIFY_FILE"
-                continue
-            relative = resolved.relative_to(root).as_posix()
-        except SafeError as error:
-            item["reason"] = str(error)
-            continue
-        except (OSError, ValueError, RuntimeError):
-            item["reason"] = "LOCATION_PATH_INVALID"
-            continue
+        relative = resolved.relative_to(root).as_posix()
         item["relative_location"] = relative
         changed = source_is_path or location != relative
         item.update(status="normalized" if changed else "valid",
