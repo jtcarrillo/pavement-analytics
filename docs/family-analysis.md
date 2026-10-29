@@ -30,9 +30,35 @@ Common spellings of section ID, inspection date, PCI, surface type and group ID
 are recognized, including `SectionUniqueID`, `Date`, `PCI`, and
 `Inspected Surface Type`. Known canonical fields take precedence over secondary
 aliases; unresolved ties produce a private candidate report. Text identities
-retain leading zeros. Dates default to ISO
-`YYYY-MM-DD`; native Excel dates are converted automatically. Other CSV date
-formats require a private options override.
+retain leading zeros. `IsConstruction` is recognized as the construction flag,
+so construction observations reset pairing.
+
+Date-only values and common timestamps are normalized to inspection calendar
+dates before pairing. Native Excel dates and year-first dates are supported.
+For numeric month/day or day/month dates, the entire source file must provide a
+consistent, unambiguous order; the first row and workstation locale do not decide.
+A value valid in only one order can resolve other ambiguous values in that file.
+Files are assessed independently. An ambiguous file or conflicting orders stop
+setup with `AMBIGUOUS_DATE_FORMAT_USE_DATE_FORMAT` or
+`MIXED_DATE_FORMATS_USE_DATE_FORMAT`.
+
+For a known format, add `--date-format "%m/%d/%Y"` for month-first dates,
+`--date-format "%d/%m/%Y"` for day-first dates, or, for example,
+`--date-format "%m/%d/%Y %I:%M:%S %p"` for month-first timestamps with AM/PM.
+The equivalent private options key is `date_format`. Explicit formats bypass
+automatic normalization and apply to every source. If both mechanisms are used,
+their values must agree. Numeric serial dates, two-digit years and timezone
+suffixes are not inferred. Convert serials or timezone-bearing values to inspection
+calendar dates privately, or supply an appropriate explicit text-date format.
+
+Automatic normalization preserves the original date text in a unique
+`source_extra_date` column and leaves the source snapshot unchanged. Invalid and
+blank dates remain row rejections. In automatic mode, timestamp clocks are
+validated before time is discarded, and intervals use calendar dates. Explicit
+timestamp formats retain the legacy elapsed-day calculation. The private
+`date_parsing_report.json` records the per-source decision and counts, including
+when ambiguity stops setup. Successful setup also embeds this report in the
+source entries in `setup_report.json`.
 
 The selection rules are independent of column order:
 
@@ -120,6 +146,13 @@ success; without it, open `results/dashboard.html` in the generated workspace.
 Console diagnostics contain fixed status/error codes only. Failure details stay
 in the workspace's `logs/runtime.log`.
 
+If every row fails date parsing, the command returns
+`NO_VALID_DATES_CHECK_DATE_FORMAT`. Other empty pairing outcomes retain
+`NO_VALID_PAIRS`. In either case, `failed/run-*/pairing_report.json` contains
+accounting and reason totals beside `rejected_rows.csv` and `transitions.csv`.
+Resolve the reported issue in a new invocation; spacing and reset rules remain
+in force after dates are accepted.
+
 | Output | Contents |
 | --- | --- |
 | `results/dashboard.html` | Offline filters, error comparisons and actual-versus-predicted charts |
@@ -128,6 +161,7 @@ in the workspace's `logs/runtime.log`.
 | `results/predictions.csv` | Combined predictions with holdout/development partition labels |
 | `results/materials/` | Detailed per-target models, predictions, folds and summaries |
 | `results/run_report.json` | Inspection accounting and target outcomes |
+| `results/pairing_report.json` | Inspection accounting and rejection/transition reason totals |
 | `results/setup_report.json` | Input inventory, mappings, features, grouping and source hashes |
 | `results/manifest.json` | Reproducibility fingerprints and output checksums |
 | `run.json`, `inputs/`, `originals/` | Generated configuration, normalized inputs and unchanged source snapshots |

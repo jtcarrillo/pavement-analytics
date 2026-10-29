@@ -8,6 +8,7 @@ import shutil
 import uuid
 
 from .io import read_json, read_table, sha256, write_json
+from .dates import normalize_dates
 from .security import Boundary, SafeError, disjoint, reject_links
 
 FORMATS = {".csv", ".tsv", ".xlsx"}
@@ -17,7 +18,7 @@ ALIASES = {
     "pci": {"pci", "pavementconditionindex"},
     "surface": {"surface", "surfacetype", "inspectedsurfacetype", "material"},
     "group": {"group", "groupid", "network", "networkid"},
-    "construction": {"construction", "constructionflag"},
+    "construction": {"construction", "constructionflag", "isconstruction"},
 }
 OPTION_KEYS = {"columns", "features", "deduct_families", "date_format", "cutoff_year",
                "min_delta_days", "max_delta_days", "folds", "seed", "holdout_fraction",
@@ -155,7 +156,7 @@ def normalization_map(headers: list[str], mapping: dict[str, str]) -> dict[str, 
 
 
 def prepare(boundary: Boundary, data: Path, options_path: Path | None = None,
-            *, by_code: bool = False) -> Path:
+            *, by_code: bool = False, date_format: str | None = None) -> Path:
     """Snapshot sources and write normalized inputs/config; originals stay intact."""
     paths = input_files(data, boundary.public, boundary.workspace)
     options = {}
@@ -168,6 +169,13 @@ def prepare(boundary: Boundary, data: Path, options_path: Path | None = None,
             raise SafeError("UNKNOWN_ANALYZE_OPTION")
         if sha256(options_path) != options_hash:
             raise SafeError("INPUT_CHANGED_DURING_READ")
+    if date_format is not None:
+        if "date_format" in options and options["date_format"] != date_format:
+            raise SafeError("DATE_FORMAT_OPTIONS_CONFLICT")
+        options["date_format"] = date_format
+    if "date_format" in options and (not isinstance(options["date_format"], str)
+                                       or not options["date_format"].strip()):
+        raise SafeError("INVALID_DATE_FORMAT")
     if by_code and "deduct_families" in options:
         raise SafeError("FAMILY_OPTIONS_CONFLICT")
     original_dir = boundary.output("originals")
@@ -186,6 +194,8 @@ def prepare(boundary: Boundary, data: Path, options_path: Path | None = None,
     group_strategy = None
     mapping_report = {"schema_version": 1, "sources": [],
                       "resolution": "For unresolved roles, set columns in a private --options JSON to exact candidate headers."}
+    date_report = {"schema_version": 1, "sources": [],
+                   "resolution": "Use --date-format with an explicit strptime format if automatic parsing cannot resolve the source."}
     normalized_names = []
     for index, original in enumerate(paths, 1):
         original_hash = sha256(original)
@@ -220,6 +230,28 @@ def prepare(boundary: Boundary, data: Path, options_path: Path | None = None,
         if len(set(normalized_headers)) != len(normalized_headers):
             raise SafeError("NORMALIZED_HEADERS_COLLIDE")
         frame = frame.rename(columns=rename)
+        date_diagnostic = {"input": str(snapshot.relative_to(boundary.workspace)),
+                           "original_column": mapping["date"],
+                           "mode": "explicit" if "date_format" in options else "automatic"}
+        date_report["sources"].append(date_diagnostic)
+        if "date_format" in options:
+            # Keep the legacy explicit-format contract: parse these values during curation.
+            date_diagnostic.update(format=options["date_format"], status="deferred_to_curation")
+        else:
+            original_date, suffix = "source_extra_date", 2
+            while original_date in frame:
+                original_date = "source_extra_date_" + str(suffix)
+                suffix += 1
+            frame[original_date] = frame["date"]
+            date_diagnostic["preservation_column"] = original_date
+            try:
+                frame["date"] = normalize_dates(frame["date"], diagnostics=date_diagnostic)
+            except SafeError as error:
+                date_diagnostic.update(status="failed", error_code=str(error))
+                write_json(boundary.output("date_parsing_report.json"), date_report)
+                raise
+            date_diagnostic.update(status="normalized", error_code=None)
+        write_json(boundary.output("date_parsing_report.json"), date_report)
         group_source = mapping.get("group")
         strategy = "declared_group:" + _header_key(group_source) if group_source else "section_identity"
         if group_strategy is not None and group_strategy != strategy:
@@ -246,6 +278,7 @@ def prepare(boundary: Boundary, data: Path, options_path: Path | None = None,
                                    "column_mapping": mapping, "deduct_header_mapping": {
                                        key: value for key, value in rename.items() if DEDUCT_HEADER.fullmatch(key)},
                                    "column_mapping_diagnostics": diagnostic,
+                                   "date_parsing": date_diagnostic,
                                    "normalization_mapping": {h: rename.get(h, h) for h in source_headers},
                                    "observed_deduct_columns": sorted(h for h in frame.columns if DEDUCT_HEADER.fullmatch(h)),
                                    "rows": len(frame)})
@@ -277,7 +310,7 @@ def prepare(boundary: Boundary, data: Path, options_path: Path | None = None,
 
 
 def analyze(boundary: Boundary, data: Path, options_path: Path | None = None,
-            *, by_code: bool = False) -> str:
+            *, by_code: bool = False, date_format: str | None = None) -> str:
     from .pipeline import run
-    config = prepare(boundary, data, options_path, by_code=by_code)
+    config = prepare(boundary, data, options_path, by_code=by_code, date_format=date_format)
     return run(boundary, config)

@@ -46,3 +46,6 @@ tests/test_reporting.py
 tests/temp_support.py
 tests/test_temp_support.py
 tests/test_column_mapping.py
+src/pavement_analytics/dates.py
+tests/test_dates.py
+tests/test_date_setup.py
