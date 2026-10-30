@@ -17,6 +17,7 @@ import datetime as dt
 import gzip
 import json
 import math
+import time
 import zipfile
 from functools import reduce
 from pathlib import Path
@@ -29,6 +30,7 @@ import numpy as np
 import pandas as pd
 
 from ..security import SafeError, disjoint, refuse_public_execution, reject_links
+from ..climate_progress import ClimateProgress
 from . import check_cli_paths
 
 
@@ -317,8 +319,11 @@ def download_timeseries(
     target: Path,
     force_download: bool = False,
     dataset: str = DATASET,
+    progress: ClimateProgress | None = None,
 ) -> None:
     if target.exists() and not force_download:
+        if progress is not None:
+            progress.update("cache_hit", cache_hits=progress.increment("cache_hits"))
         print(f"[INFO] Reusing existing file: {target.name}")
         return
 
@@ -332,7 +337,12 @@ def download_timeseries(
         # ERA5 (not Land) requires product_type.
         request["product_type"] = ["reanalysis"]
     print(f"[INFO] Requesting {dataset} {ERA5_VARIABLES} for ({lat}, {lon}) {start_year}-{end_year}")
+    if progress is not None:
+        progress.update("requesting", requests=progress.increment("requests"),
+                        dataset="era5" if dataset == DATASET_ERA5 else "era5-land")
     client.retrieve(dataset, request, str(target))
+    if progress is not None:
+        progress.update("downloaded")
 
 
 def read_magic_bytes(path: Path, n: int = 8) -> bytes:
@@ -1183,6 +1193,7 @@ def _load_one_attempt(
     force_download: bool,
     dataset: str,
     cache_suffix: str,
+    progress: ClimateProgress | None = None,
 ) -> pd.DataFrame | None:
     """Download (or reuse) a single ERA5(-Land) request at (lat, lon), parse
     it, return the prepared hourly DataFrame. Returns None if the result is
@@ -1200,9 +1211,14 @@ def _load_one_attempt(
     for path in (parquet_file, raw_file):
         reject_links(path)
 
+    if progress is not None:
+        progress.update("cache_check", dataset="era5" if dataset == DATASET_ERA5 else "era5-land")
+
     if parquet_file.exists() and not force_download:
         try:
             cached = pd.read_parquet(parquet_file)
+            if progress is not None:
+                progress.update("cache_hit", cache_hits=progress.increment("cache_hits"))
             if len(cached) > 0:
                 return cached
             # Empty parquet means a previous attempt confirmed this point is
@@ -1223,12 +1239,17 @@ def _load_one_attempt(
                 target=raw_file,
                 force_download=force_download,
                 dataset=dataset,
+                progress=progress,
             )
         except Exception as e:
             print(f"[ERROR] Download failed for ({lat}, {lon}) on {dataset}: {e}")
             return None
+        if progress is not None:
+            progress.update("parsing")
         df = open_dataset(raw_file)
         try:
+            if progress is not None:
+                progress.update("preparing")
             hourly = prepare_hourly_df(df, lon=lon)
             break
         except KeyError as e:
@@ -1259,6 +1280,7 @@ def get_hourly_for_location(
     force_download: bool,
     snap_radius: int,
     era5_fallback: bool,
+    progress: ClimateProgress | None = None,
 ) -> tuple[pd.DataFrame | None, dict[str, float | str | int]]:
     """Return (hourly_df, source_info) for one location.
 
@@ -1290,6 +1312,8 @@ def get_hourly_for_location(
     )
 
     for cand_lat, cand_lon, dlat, dlon in candidates:
+        if progress is not None and (dlat != 0 or dlon != 0):
+            progress.update("fallback", dataset="era5-land")
         suffix = "" if (dlat == 0 and dlon == 0) else f"snap_{dlat:+d}_{dlon:+d}".replace("+", "p").replace("-", "m")
         hourly = _load_one_attempt(
             client=client,
@@ -1301,6 +1325,7 @@ def get_hourly_for_location(
             force_download=force_download,
             dataset=DATASET,
             cache_suffix=suffix,
+            progress=progress,
         )
         if hourly is not None:
             cells = max(abs(dlat), abs(dlon))
@@ -1314,6 +1339,8 @@ def get_hourly_for_location(
 
     # Attempt 2: ERA5 fallback at the original point.
     if era5_fallback:
+        if progress is not None:
+            progress.update("fallback", dataset="era5")
         print(f"[INFO]   ERA5-Land snap exhausted; falling back to ERA5 (0.25 deg)")
         hourly = _load_one_attempt(
             client=client,
@@ -1325,6 +1352,7 @@ def get_hourly_for_location(
             force_download=force_download,
             dataset=DATASET_ERA5,
             cache_suffix="era5",
+            progress=progress,
         )
         if hourly is not None:
             return hourly, {
@@ -1394,11 +1422,15 @@ def main(argv=None) -> int:
     if args.end_year < args.start_year:
         raise ValueError("--end-year must be >= --start-year")
 
+    progress = ClimateProgress()
+    progress.update("initializing", start_year=args.start_year, end_year=args.end_year)
+
     # Build the final column names from prefix/suffix.
     out_cols = {key: f"{args.col_prefix}{label}{args.col_suffix}" for key, label in STAT_COLUMNS}
 
     print(f"[INFO] Reading input CSV: {input_path}")
     df_in = pd.read_csv(input_path)
+    progress.update("initializing", total_rows=len(df_in))
 
     for required in (args.lat_col, args.lon_col, args.dates_col):
         if required not in df_in.columns:
@@ -1471,6 +1503,8 @@ def main(argv=None) -> int:
     )
     print(f"[INFO] Input rows: {len(df_in)}, unique locations: {len(unique_locs)}")
 
+    progress.update("initializing", total_locations=len(unique_locs))
+
     client = _create_cds_client()
 
     # Stage 1: download + cache hourly DataFrame for each unique location,
@@ -1491,6 +1525,7 @@ def main(argv=None) -> int:
         "snap_distance_km": float("nan"),
     }
     for i, loc_row in unique_locs.iterrows():
+        progress.update("loading_location", location_index=int(i) + 1)
         lat = float(loc_row["_lat_key"])
         lon = float(loc_row["_lon_key"])
         print(f"[INFO] ({i + 1}/{len(unique_locs)}) loading lat={lat}, lon={lon}")
@@ -1505,12 +1540,14 @@ def main(argv=None) -> int:
                 force_download=args.force_download,
                 snap_radius=args.snap_radius,
                 era5_fallback=args.era5_fallback,
+                progress=progress,
             )
             if hourly is None:
                 print(f"[ERROR] No usable data for ({lat}, {lon}); will get NaN")
                 pav_min_series = None
                 cooling_6h_series = None
             else:
+                progress.update("preparing")
                 cells = source_info.get("snap_distance_cells", 0)
                 km = source_info.get("snap_distance_km", 0.0)
                 print(
@@ -1526,11 +1563,24 @@ def main(argv=None) -> int:
             print(f"[ERROR] Failed to load ({lat}, {lon}): {e}")
             location_data[(lat, lon)] = (None, dict(empty_source), None, None)
 
+        usable = location_data[(lat, lon)][0] is not None
+        progress.increment("usable_locations" if usable else "missing_locations")
+        progress.update("location_complete" if usable else "location_failed",
+                        locations_completed=int(i) + 1)
+
     # Stage 2: slice each row's interval and compute stats.
     row_results: list[dict[str, float | str]] = []
     nan_template = nan_stats_dict()
+    progress.update("calculating", rows_completed=0)
+    last_progress = time.monotonic()
 
     for idx, row in df_in.iterrows():
+        # Report already finished rows, including every missing-data branch.
+        # A slow single row remains visible through the parent's heartbeat.
+        now = time.monotonic()
+        if row_results and (len(row_results) % 100 == 0 or now - last_progress >= 1):
+            progress.update("calculating", rows_completed=len(row_results))
+            last_progress = now
         lat_key = row["_lat_key"]
         lon_key = row["_lon_key"]
         start = row["_interval_start"]
@@ -1579,6 +1629,8 @@ def main(argv=None) -> int:
             row_results.append(dict(nan_template))
 
     # Stage 3: assemble output DataFrame.
+    progress.update("calculating", rows_completed=len(row_results))
+    progress.update("writing")
     results_df = pd.DataFrame(row_results)
     for stat_key, _ in STAT_COLUMNS:
         df_in[out_cols[stat_key]] = results_df[stat_key].values
@@ -1591,6 +1643,7 @@ def main(argv=None) -> int:
     new_col_names = [out_cols[k] for k, _ in STAT_COLUMNS]
     print(f"[INFO] Wrote {output_path} ({len(df_out)} rows)")
     print(f"[INFO] New columns: {new_col_names}")
+    progress.update("complete")
 
     return 0
 

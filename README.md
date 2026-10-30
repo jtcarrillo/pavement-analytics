@@ -1,7 +1,7 @@
 # Pavement Analytics
 
 Generic Python tools for Pavement Condition Index (PCI), deduct values, and PAVER
-inspection exports. Version 0.4.3 provides a runnable curation and analysis
+inspection exports. Version 0.5.0 provides a runnable curation and analysis
 foundation. All operational inputs, configuration, provenance, fitted models,
 and results belong in a separate private workspace.
 
@@ -69,10 +69,24 @@ deduct-family totals using local baseline, ElasticNet and random-forest models.
 It retains the original inspection intervals and climate definitions, including
 PG, cooling, rainflow and construction-aging calculations. The final offline
 dashboard ranks target predictability and shows the best predictors per family.
-The terminal shows selected input/mapping files, stage progress and basic counts,
-with a copy in `logs/progress.log`. Add `--quiet` to suppress that terminal summary.
+`--open` opens a local progress page immediately and the final dashboard after
+success. The terminal and progress page show selected files, stage counts,
+weather cache/download activity, completed locations and climate-feature rows.
+Subprocess heartbeats keep long waits visible. The readable terminal output is
+also saved in `logs/progress.log`; add `--quiet` to suppress that terminal summary.
 Setup also lists unavailable auxiliary paths and invalid mapping entries with
 reasons; review `full_setup_report.json` before starting a new run.
+
+To view the latest run that is already running, use a second terminal:
+
+```bash
+pavement monitor --open
+```
+
+You can supply a specific workspace as `pavement monitor "/path/to/private/run" --open`.
+Monitoring an older run uses its existing logs and checkpoints; it does not
+restart the pipeline. The [live progress guide](docs/full-pipeline.md#live-progress-and-existing-runs)
+explains what can be observed while CDS is waiting.
 
 The command reuses a private `pavement-full.json`, `pipeline.json`, or
 `pipeline.example.json` beside the data or in its parent. Your existing location
@@ -167,8 +181,8 @@ it does not discover or execute code from the data repository. Git LFS objects
 need an approved internal materialization step; unresolved pointers are rejected.
 
 All results stay under the configured private output directory. `full` displays
-local file paths, progress and aggregate counts by default; `full --quiet` and
-the other commands print fixed status/error codes. Detailed diagnostics stay in
+local file paths, progress and aggregate counts by default; `full --quiet`
+prints only fixed terminal status/error codes. Detailed diagnostics stay in
 private `logs/runtime.log`. No automatic publication, telemetry or external model
 service is part of the analysis pipeline.
 

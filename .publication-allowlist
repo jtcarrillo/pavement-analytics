@@ -22,6 +22,9 @@ src/pavement_analytics/__init__.py
 src/pavement_analytics/__main__.py
 src/pavement_analytics/autorun.py
 src/pavement_analytics/cli.py
+src/pavement_analytics/climate_progress.py
+src/pavement_analytics/live_progress.py
+src/pavement_analytics/monitor.py
 src/pavement_analytics/climate.py
 src/pavement_analytics/curation.py
 src/pavement_analytics/dates.py
@@ -81,6 +84,10 @@ tests/test_original_pipeline.py
 tests/test_original_progress.py
 tests/test_pipeline.py
 tests/test_progress.py
+tests/test_live_progress.py
+tests/test_live_cli.py
+tests/test_monitor.py
+tests/test_original_era5_progress.py
 tests/test_publication.py
 tests/test_reporting.py
 tests/test_study.py

@@ -164,6 +164,10 @@ class FullPipelineTests(unittest.TestCase):
         self.assertTrue(summary.original_target.str.endswith(" deduct_end").all())
         self.assertFalse(summary.original_target.eq("DetRatePerYear").any())
         html = (pipeline / "10_report/dashboard.html").read_text()
+        progress_state = json.loads((self.work / "progress.json").read_text())
+        self.assertIn(progress_state["status"], {"completed", "completed_with_warnings"})
+        self.assertEqual(progress_state["dashboard"], (pipeline / "10_report/dashboard.html").as_uri())
+        self.assertNotIn('http-equiv="refresh"', (self.work / "progress.html").read_text())
         self.assertIn("retrospective", html.lower())
         self.assertNotIn("Historical window: 365", html)
         self.assertEqual(list(self.public.iterdir()), [])
@@ -381,6 +385,9 @@ class FullPipelineTests(unittest.TestCase):
         self.assertIn("Failed setup", output)
         self.assertNotIn('Started "01_split"', output)
         self.assertNotIn("generated-sensitive-cell", output)
+        progress = json.loads((self.work / "progress.json").read_text())
+        self.assertEqual(progress["status"], "failed")
+        self.assertNotIn("generated-sensitive-cell", (self.work / "progress.html").read_text())
 
     def test_setup_summary_identifies_unmapped_and_missing_location_files(self):
         mapping = json.loads(self.mapping.read_text())

@@ -380,9 +380,9 @@ def full(boundary: Boundary, data: Path | None = None, config_path: Path | None 
             write_json(boundary.output("full_result.json"), {"status": "completed", "model_backend": "local",
                                                             "dashboard": str(report_out / "dashboard.html"),
                                                             "run_report": str(run.path)})
-            run.finish("completed_with_warnings" if run.data["warnings"] else "completed")
             _notify(progress, "output", dashboard=str(report_out / "dashboard.html"),
                     models=str(models_out), report=str(run.path))
+            run.finish("completed_with_warnings" if run.data["warnings"] else "completed")
         except BaseException as error:
             run.finish("interrupted" if isinstance(error, KeyboardInterrupt) else "failed", str(error))
             if isinstance(error, (SafeError, KeyboardInterrupt)):

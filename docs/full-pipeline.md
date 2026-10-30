@@ -19,6 +19,10 @@ configuration, SDK and network access are not used. Models, predictions, data
 and reports remain local in a new private workspace under `~/pavement-runs/`.
 The command displays local input/mapping paths, stage progress and basic counts.
 Detailed diagnostics and raw subprocess output stay in private logs.
+`--open` opens the local progress page when the run starts, then opens the
+consolidated dashboard after success. Use `--progress` to open only the progress
+page. Every full run writes `progress.html` and `progress.json` in its workspace,
+even when no browser is opened.
 
 The original input and auxiliary files are still required. Setup discovers
 `pavement-full.json`, then `pipeline.json`, then `pipeline.example.json`, looking
@@ -160,6 +164,55 @@ Progress includes local file paths and aggregate results; keep captured terminal
 output with the private run. Raw data rows, credentials, complete configuration
 objects and exception details are not forwarded to the terminal. Changing this
 display option does not change models or invalidate a verified resume.
+
+### Live progress and existing runs
+
+The local `progress.html` page refreshes while the run is active and shows the
+current stage, elapsed time, selected inputs, recent progress messages and time
+since the latest signal. It reads no remote resources and needs no HTTP server.
+The corresponding `progress.json` retains structured display state.
+
+During ERA5 processing, progress distinguishes location loading, cache reuse,
+requests, parsing and feature calculations. Location and inspection-row counters
+show how much work has finished. The parent process emits a heartbeat about
+every 15 seconds while a subprocess is running, even if the child has printed
+nothing. A heartbeat establishes that the child process is still active; it
+does not prove that the remote CDS job is advancing.
+
+The request phase covers both the CDS queue and the subsequent download.
+The display therefore says "waiting for CDS / downloading" rather than claiming
+a precise queue position, transfer percentage or completion time. After weather
+loading finishes, calculating climate features for inspection intervals can
+also take time; this has its own row counter.
+
+For a pipeline already running, open a second terminal and monitor it without
+restarting it:
+
+```bash
+# Latest run under ~/pavement-runs
+pavement monitor --open
+
+# A particular run workspace
+pavement monitor "/path/to/existing/private/run" --open
+```
+
+Keep the monitor command running to follow changes. Ctrl+C stops the monitor
+only; the separate pipeline process keeps running. Add `--once` to write one
+snapshot and exit instead of following the run.
+
+For a run started by an older version, the monitor uses its saved checkpoints
+and private stage logs. It can show recorded phase/location activity and log
+freshness, but cannot prove the original child is still alive or reconstruct
+row counts that were never recorded. Detailed counters and new heartbeats
+require a run started with the updated code. Updating the installed code does
+not add instrumentation to an already-running process. Code changes also
+require a new run under the existing resume fingerprint rules; a new run may
+still reuse its external ERA5 cache.
+
+A missing-location warning counts inspection pairs without usable coordinates;
+it does not identify a stalled CDS request. Those pairs cannot receive their
+location's climate features until the private mapping/location inputs are fixed.
+The progress display does not invent coordinates or silently repair mappings.
 
 All stages are recorded in `pipeline/run_report.json` and `run_report.md` with
 status, timing, counts, warnings and artifact checksums. Empty surface populations
