@@ -5,25 +5,26 @@ spline models, and a two-stage occurrence/severity model for the existing
 deduct-family sweep. Each target remains a separate regression task for each
 pavement surface. DataRobot's proprietary blueprints are not reproduced exactly.
 
-The current production search contains a weighted-median baseline, two Elastic
-Net configurations and two Random Forest configurations. R0 provides the
+The observed-level search contains a weighted-median baseline, two Elastic
+Net, two Random Forest and four ExtraTrees configurations. R0 provides the
 reproducible dataset and benchmark runner. Build 1 completes R1 with a versioned
-registry and common evaluation/failure contract. **The five new model families
-below are planned, not implemented.**
+registry and common evaluation/failure contract. Build 2 completes R2 with
+ExtraTrees. **XGBoost, LightGBM, additive splines and two-stage models remain
+planned.**
 
-**Roadmap progress: 22.2% — 2 of 9 phase gates complete (R0 and R1).** Phases R0
+**Roadmap progress: 33.3% — 3 of 9 phase gates complete (R0, R1 and R2).** Phases R0
 through R8 have equal weight for this count. This is accepted implementation
 coverage, not an estimate of elapsed engineering effort. Build publication,
 merge status and private deployment acceptance are reported separately.
-New algorithm families delivered: 0 of 5. The next build is R2, ExtraTrees.
+New algorithm families delivered: 1 of 5. The next build is R3, XGBoost.
 
 ## Delivery sequence and dependencies
 
 | Phase | Deliverable | Depends on | Completion gate | Current status |
 |---|---|---|---|---|
-| R0 | Synthetic data, truth contracts and benchmark runner | Existing local search | Reproducible files, isolated groups and existing-model smoke run | Complete in this change |
+| R0 | Synthetic data, truth contracts and benchmark runner | Existing local search | Reproducible files, isolated groups and existing-model smoke run | Complete — test kit |
 | R1 | Candidate registry and common evaluation contract | R0 | Existing candidates retain their selection/prediction behavior | Complete — Build 1 |
-| R2 | ExtraTrees | R1 | Weighted fitting, mixed inputs, serialization and nonlinear fixtures pass | Planned |
+| R2 | ExtraTrees | R1 | Weighted fitting, mixed inputs, serialization and nonlinear fixtures pass | Complete — Build 2 |
 | R3 | XGBoost | R1, R2 evaluation pattern | Optional dependency and nested stopping tests pass | Planned |
 | R4 | LightGBM | R1, R3 stopping pattern | Weighted validation, category and platform checks pass | Planned |
 | R5 | Gaussian additive spline model | R1 | Additive shapes, weights and extrapolation checks pass | Planned |
@@ -105,7 +106,7 @@ covered by the repository's separate generated pipeline tests.
 
 ### Delivered in Build 1
 
-- `model_registry.py` declares the implemented IDs `median`, `enet_0.01`,
+- Build 1's registry declared the implemented IDs `median`, `enet_0.01`,
   `enet_0.1`, `rf_5` and `rf_20`, model families, fixed parameters, dependency
   availability, sample-weight support, prediction meaning and worker limits.
   The public `study_modeling.candidates(seed)` adapter remains usable.
@@ -175,10 +176,50 @@ as unavailable while supported candidates continue.
 
 ## R2 — ExtraTrees
 
-**Implementation.** Use `ExtraTreesRegressor` through the existing mixed-type
-preprocessing and nonnegative-output wrapper. Start with a bounded proposed
-grid: 200 trees, leaf sizes 2/10, maximum depth 12/None, and one worker per fit.
-This is four configurations. Tune the grid on development data only.
+### Delivered in Build 2 (version 0.5.2)
+
+The default observed-level searches in `full` and `study` include these stable
+IDs, using the existing training-fold preprocessing and nonnegative wrapper:
+
+| Candidate ID | Minimum leaf observations | Maximum depth |
+|---|---|---|
+| `et_leaf2_depth12` | 2 | 12 |
+| `et_leaf2_depthnone` | 2 | Unlimited |
+| `et_leaf10_depth12` | 10 | 12 |
+| `et_leaf10_depthnone` | 10 | Unlimited |
+
+Every configuration uses 200 trees, squared-error fitting with supplied sample
+weights, all encoded features at each split, no bootstrap and one worker.
+Selection remains mean weighted CV MAE. No additional package is required.
+Registry version 2 records these settings in audits, summaries and saved models.
+
+The larger default pool can change selected models and numerical results. The
+original four learning configurations retain their fit, score and prediction
+parity when explicitly selected. The separate legacy rate grid is unchanged.
+With five folds and both feature sets, ExtraTrees adds 40 CV fits per target,
+plus any selected refits. Use a new run after updating the source; existing
+resume fingerprints continue to reject code changes.
+
+### Frozen acceptance protocol
+
+Build 2 acceptance is frozen before execution: calibration seeds 20261011,
+20261012 and 20261013, followed by verification seed 20261031. Use the standard
+PCC population, its original five grouped folds and interval-day weights.
+For each calibration seed, the four-candidate ExtraTrees search must reduce
+development CV MAE by at least 20% against the weighted median on both threshold
+and interaction targets. These gates concern planted signal, not superiority
+to every competing estimator. Do not change the grid or gates after inspecting
+verification results.
+
+The standard verification covers linear, threshold, interaction, no-signal and
+stress inputs, plus constant/missing-label controls. Every registered ExtraTrees
+configuration is fitted and round-trip serialized independently of selection.
+The scale resource check fits all four configurations sequentially on the
+development portion of the scale PCC fixture (5,760 total observations).
+Before measurement, the per-standard-task and complete scale-fit budgets are
+120 seconds wall time, 120 seconds process CPU time and 768 MiB peak process
+RSS on the recorded Linux environment, with one estimator worker. These are
+acceptance budgets for these fixtures, not a runtime promise for private data.
 
 **Tests.** Run linear, threshold, interaction, no-signal and stress fixtures.
 Check supplied weights affect the fitted loss, saved models reproduce saved
@@ -188,6 +229,42 @@ should require ExtraTrees to beat every other algorithm.
 
 **Gate.** Shared functional tests pass, nonlinear signal is learnable on
 predeclared calibration seeds, and CPU/memory fit within the recorded budget.
+
+### Acceptance evidence
+
+- All 374 local regression tests passed. The six calibration seed/target cases
+  cleared the frozen 20% development-CV improvement gate. Analytical single-leaf
+  tests verify that every configuration actually uses supplied weights.
+- Mixed numeric/categorical inputs, missing predictors, an entirely missing
+  column, unseen holdout categories and missing target labels pass. Tests prove
+  training-only imputation/encoding, cloneability, serialization for every
+  configuration, grouped fold identity and holdout-label mutation invariance.
+  Constant and unsupported target populations retain explicit statuses.
+- Verification seed 20261031 completed all nine standard PCC targets and a
+  separate stress search without candidate failures or unavailable candidates.
+  ExtraTrees was selected on smooth and interaction targets. ElasticNet and
+  Random Forest remained selected on other signals; the median remained selected
+  on no-signal and zero-inflated targets. Reloaded model predictions match saved
+  predictions within absolute/relative tolerance `1e-12`; direct configuration
+  round trips use absolute tolerance `1e-12`.
+- The standard tasks took at most 23.83 seconds wall / 23.82 seconds CPU. The
+  stress task took 21.36 seconds wall / CPU. Their peak process RSS was
+  177.80 MiB. The four scale fits, prediction and serialization checks took
+  9.04 seconds wall / CPU, with 346.62 MiB cumulative peak process RSS.
+  All resource gates passed. Measurements used Linux x86_64, Python 3.12.14,
+  scikit-learn 1.8.0, NumPy 2.3.5, pandas 2.2.3 and SciPy 1.17.0.
+
+Reproduce functional and calibration checks locally:
+
+```bash
+PYTHONPATH=src python -m unittest discover -s tests -p 'test_extra_trees.py' -v
+```
+
+The existing benchmark `smoke --all-targets` command exercises the expanded
+default pool on a generated standard bundle. To isolate ExtraTrees, repeat
+`--candidate` with the four IDs above. The shared weighted median remains in
+each search. These are synthetic model-stage checks; live ERA5, deployment
+macOS validation and private-pilot acceptance remain in R8. Hosted CI is disabled.
 
 ## R3 — XGBoost
 

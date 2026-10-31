@@ -16,7 +16,7 @@ from typing import Callable
 from .security import SafeError
 
 
-REGISTRY_VERSION = 1
+REGISTRY_VERSION = 2
 BASELINE_ID = "median"
 ID_PATTERN = re.compile(r"[A-Za-z][A-Za-z0-9_.-]{0,79}")
 
@@ -31,6 +31,12 @@ def _forest(parameters):
     from sklearn.ensemble import RandomForestRegressor
     from .study_modeling import _estimator
     return _estimator(RandomForestRegressor(**parameters))
+
+
+def _extra_trees(parameters):
+    from sklearn.ensemble import ExtraTreesRegressor
+    from .study_modeling import _estimator
+    return _estimator(ExtraTreesRegressor(**parameters))
 
 
 @dataclass(frozen=True)
@@ -71,7 +77,7 @@ class CandidateSpec:
 
 
 def candidate_specs(seed: int = 42):
-    """Fresh definitions retain the original four IDs and exact parameters."""
+    """Fresh definitions preserve old candidates and bound each new grid."""
     if isinstance(seed, bool) or not isinstance(seed, int) or seed < 0:
         raise SafeError("INVALID_MODEL_SEED")
     return (
@@ -80,6 +86,11 @@ def candidate_specs(seed: int = 42):
         *(CandidateSpec(f"rf_{leaf}", "random_forest", {"n_estimators": 100, "min_samples_leaf": leaf,
            "max_depth": 12, "max_features": 0.8, "n_jobs": 1, "random_state": seed}, _forest)
           for leaf in (5, 20)),
+        *(CandidateSpec(f"et_leaf{leaf}_depth{depth if depth is not None else 'none'}", "extra_trees",
+           {"n_estimators": 200, "criterion": "squared_error", "min_samples_leaf": leaf,
+            "max_depth": depth, "max_features": 1.0, "bootstrap": False,
+            "n_jobs": 1, "random_state": seed}, _extra_trees)
+          for leaf in (2, 10) for depth in (12, None)),
     )
 
 

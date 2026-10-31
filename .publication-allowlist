@@ -74,6 +74,7 @@ tests/test_column_mapping.py
 tests/test_date_setup.py
 tests/test_dates.py
 tests/test_example.py
+tests/test_extra_trees.py
 tests/test_families.py
 tests/test_full_modeling.py
 tests/test_full_pipeline.py

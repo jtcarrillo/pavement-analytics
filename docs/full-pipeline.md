@@ -282,7 +282,11 @@ constitute standards certification or validation on operational data.
 ## Local models and interpretation
 
 Each material/family task compares a weighted median baseline, two ElasticNet
-settings and two random-forest settings. Imputation, numeric scaling and
+settings, two random-forest settings and four ExtraTrees settings. ExtraTrees
+uses 200 trees, leaf sizes 2/10, maximum depth 12/unlimited and one worker.
+It needs no additional dependency. The four configurations add 40 training
+fits per target with five CV folds and two feature sets, plus selected refits.
+Imputation, numeric scaling and
 categorical encoding are learned within training folds. Model selection uses
 cross-validation; the selected model is fitted on development groups only and
 evaluated on reserved holdout groups. Saved models do not train on holdout.
