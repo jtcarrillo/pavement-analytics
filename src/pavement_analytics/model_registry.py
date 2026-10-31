@@ -13,10 +13,13 @@ import re
 import traceback
 from typing import Callable
 
+from packaging.version import InvalidVersion, Version
+
 from .security import SafeError
 
 
-REGISTRY_VERSION = 2
+REGISTRY_VERSION = 3
+XGBOOST_MIN_VERSION, XGBOOST_MAX_VERSION = "3.1.3", "3.2"
 BASELINE_ID = "median"
 ID_PATTERN = re.compile(r"[A-Za-z][A-Za-z0-9_.-]{0,79}")
 
@@ -39,6 +42,31 @@ def _extra_trees(parameters):
     return _estimator(ExtraTreesRegressor(**parameters))
 
 
+def _xgboost(parameters):
+    from .boosting import GroupedXGBoostRegressor, require_xgboost
+    require_xgboost()
+    parameters = parameters.copy()
+    rounds = parameters.pop("early_stopping_rounds")
+    fraction = parameters.pop("stopping_fraction")
+    return GroupedXGBoostRegressor(parameters, rounds, fraction)
+
+
+def dependency_version(package, minimum=None, maximum=None):
+    """Return installed version and range support without importing a backend."""
+    try:
+        installed = importlib.metadata.version(package)
+    except importlib.metadata.PackageNotFoundError:
+        return None, False
+    try:
+        version = Version(installed)
+        supported = (not version.is_prerelease and not version.is_devrelease
+                     and (minimum is None or version >= Version(minimum))
+                     and (maximum is None or version < Version(maximum)))
+    except InvalidVersion:
+        supported = False
+    return installed, supported
+
+
 @dataclass(frozen=True)
 class CandidateSpec:
     candidate: str
@@ -50,6 +78,8 @@ class CandidateSpec:
     supports_sample_weight: bool = True
     prediction_meaning: str = "nonnegative regression point estimate"
     max_workers: int = 1
+    minimum_version: str | None = None
+    maximum_version: str | None = None
 
     def metadata(self):
         if (not isinstance(self.candidate, str) or not ID_PATTERN.fullmatch(self.candidate)
@@ -58,6 +88,16 @@ class CandidateSpec:
                 or isinstance(self.max_workers, bool) or not isinstance(self.max_workers, int) or self.max_workers < 1
                 or not isinstance(self.import_name, str) or not self.import_name):
             raise SafeError("INVALID_MODEL_CANDIDATE_DEFINITION")
+        try:
+            for bound in (self.minimum_version, self.maximum_version):
+                if bound is not None:
+                    if not isinstance(bound, str):
+                        raise TypeError
+                    Version(bound)
+            if self.minimum_version and self.maximum_version and Version(self.minimum_version) >= Version(self.maximum_version):
+                raise InvalidVersion("invalid version interval")
+        except (InvalidVersion, TypeError):
+            raise SafeError("INVALID_MODEL_CANDIDATE_DEFINITION") from None
         try:
             available = importlib.util.find_spec(self.import_name) is not None
         except (ValueError, ImportError, AttributeError):
@@ -70,10 +110,15 @@ class CandidateSpec:
             raise SafeError("INVALID_MODEL_CANDIDATE_PARAMETERS") from None
         if not isinstance(parameters, dict):
             raise SafeError("INVALID_MODEL_CANDIDATE_PARAMETERS")
+        installed, supported = dependency_version(self.required_package, self.minimum_version, self.maximum_version)
+        availability = "available" if available else "unavailable"
+        if available and (self.minimum_version or self.maximum_version) and not supported:
+            availability = "unsupported"
         return {"candidate": self.candidate, "family": self.family, "parameters": parameters,
                 "required_package": self.required_package, "supports_sample_weight": self.supports_sample_weight,
                 "prediction_meaning": self.prediction_meaning, "max_workers": self.max_workers,
-                "availability": "available" if available else "unavailable"}
+                "availability": availability, "installed_version": installed,
+                "minimum_version": self.minimum_version, "maximum_version": self.maximum_version}
 
 
 def candidate_specs(seed: int = 42):
@@ -91,6 +136,15 @@ def candidate_specs(seed: int = 42):
             "max_depth": depth, "max_features": 1.0, "bootstrap": False,
             "n_jobs": 1, "random_state": seed}, _extra_trees)
           for leaf in (2, 10) for depth in (12, None)),
+        *(CandidateSpec(f"xgb_depth{depth}_lr{rate}{'_es' if stopping else ''}", "xgboost",
+           {"n_estimators": 300, "max_depth": depth, "learning_rate": rate,
+            "objective": "reg:squarederror", "eval_metric": "mae", "tree_method": "hist",
+            "device": "cpu", "subsample": 1.0, "colsample_bytree": 1.0,
+            "n_jobs": 1, "random_state": seed, "verbosity": 0,
+            "early_stopping_rounds": 20 if stopping else None, "stopping_fraction": 0.2},
+           _xgboost, required_package="xgboost", import_name="xgboost",
+           minimum_version=XGBOOST_MIN_VERSION, maximum_version=XGBOOST_MAX_VERSION)
+          for stopping in (False, True) for depth in (3, 6) for rate in (0.05, 0.1)),
     )
 
 
@@ -138,6 +192,8 @@ def build_candidates(seed=42, requested=None, *, specs=None):
         record = spec.metadata()
         if not spec.supports_sample_weight:
             record.update(candidate_status="unsupported", error_code="MODEL_SAMPLE_WEIGHTS_REQUIRED")
+        elif record["availability"] == "unsupported":
+            record.update(candidate_status="unsupported", error_code="MODEL_DEPENDENCY_VERSION_UNSUPPORTED")
         elif record["availability"] != "available":
             record.update(candidate_status="unavailable", error_code="MODEL_DEPENDENCY_UNAVAILABLE")
         else:
@@ -155,7 +211,7 @@ def build_candidates(seed=42, requested=None, *, specs=None):
 
 def environment_versions():
     versions = {}
-    for package in ("numpy", "pandas", "scikit-learn", "scipy", "joblib"):
+    for package in ("numpy", "pandas", "scikit-learn", "scipy", "joblib", "openpyxl", "packaging", "xgboost"):
         try:
             versions[package] = importlib.metadata.version(package)
         except importlib.metadata.PackageNotFoundError:

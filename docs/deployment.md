@@ -1,5 +1,18 @@
 # Deployment
 
+Observed deduct-level searches can include the optional XGBoost backend:
+
+```bash
+python -m pip install -e '.[original,xgboost]'
+```
+
+Use XGBoost `>=3.1.3,<3.2`; the local admission build uses 3.1.3. For that exact
+backend, install `xgboost==3.1.3` alongside `requirements-tested.txt`. The base
+installation remains usable without XGBoost. Unsupported versions and backend
+load failures are retained in candidate audits and model comparisons; explicitly
+requested unusable candidates fail preflight. Dependency changes invalidate
+full-run resume fingerprints. Validate the installation on the deployment OS.
+
 ## Public repository
 
 Use a new dedicated code-only repository, or an existing repository only after

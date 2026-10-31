@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 import hashlib
-import importlib.metadata
 import json
 import os
 import re
@@ -63,8 +62,8 @@ def validate_config(config: dict) -> None:
 
 
 def environment_versions() -> dict:
-    return {"python": sys.version.split()[0], **{name: importlib.metadata.version(name) for name in
-            ["numpy", "pandas", "scipy", "scikit-learn", "openpyxl", "joblib"]}}
+    from .model_registry import environment_versions as model_versions
+    return {"python": sys.version.split()[0], **model_versions()}
 
 
 def code_digest() -> str:

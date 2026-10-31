@@ -164,6 +164,14 @@ available with precomputed climate, site-independent performance is not proven.
 Each task compares a group-weighted median baseline, two ElasticNet settings,
 two random-forest settings and four ExtraTrees settings. The ExtraTrees grid
 uses 200 trees, leaf sizes 2/10, maximum depth 12/unlimited and one worker.
+The optional `xgboost` extra (`>=3.1.3,<3.2`) adds four fixed 300-round CPU
+configurations and four matching grouped-stopping configurations. Stopping
+reserves 20% of the current training groups with patience 20, then refits all
+current training rows at the chosen count. Stopping and fitting use their
+matching group-balanced weights; outer CV and holdout groups remain excluded.
+Iteration counts and fitting/stopping/refit identities are retained in private
+candidate audits and model comparison CSVs. Missing or unsupported optional
+backends remain visible without preventing base models from running.
 Imputation, scaling and categorical encoding
 are fitted within each training fold. CV selects the model; the selected model
 is fitted on development groups only. The saved model never trains on holdout.

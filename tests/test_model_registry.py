@@ -87,8 +87,10 @@ class ModelRegistryTests(unittest.TestCase):
     def test_catalog_lists_only_implemented_families_and_stable_weighted_ids(self):
         catalog = candidate_catalog()
         self.assertEqual([r["candidate"] for r in catalog], ["median", "enet_0.01", "enet_0.1", "rf_5", "rf_20",
-                         "et_leaf2_depth12", "et_leaf2_depthnone", "et_leaf10_depth12", "et_leaf10_depthnone"])
-        self.assertEqual({r["family"] for r in catalog}, {"weighted_median", "elastic_net", "random_forest", "extra_trees"})
+                         "et_leaf2_depth12", "et_leaf2_depthnone", "et_leaf10_depth12", "et_leaf10_depthnone",
+                         "xgb_depth3_lr0.05", "xgb_depth3_lr0.1", "xgb_depth6_lr0.05", "xgb_depth6_lr0.1",
+                         "xgb_depth3_lr0.05_es", "xgb_depth3_lr0.1_es", "xgb_depth6_lr0.05_es", "xgb_depth6_lr0.1_es"])
+        self.assertEqual({r["family"] for r in catalog}, {"weighted_median", "elastic_net", "random_forest", "extra_trees", "xgboost"})
         self.assertTrue(all(r["supports_sample_weight"] and r["max_workers"] == 1 for r in catalog))
         json.dumps(catalog, allow_nan=False)
         specs = candidate_specs()

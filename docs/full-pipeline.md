@@ -286,11 +286,35 @@ settings, two random-forest settings and four ExtraTrees settings. ExtraTrees
 uses 200 trees, leaf sizes 2/10, maximum depth 12/unlimited and one worker.
 It needs no additional dependency. The four configurations add 40 training
 fits per target with five CV folds and two feature sets, plus selected refits.
+Installing `.[original,xgboost]` adds eight optional CPU XGBoost settings:
+depth 3/6 and learning rate 0.05/0.1, each with a fixed 300-round budget or
+20-round patience. XGBoost is version-bounded to `>=3.1.3,<3.2`.
+
+Stopped candidates reserve 20% of the current training fold's groups for
+stopping. Preprocessing is fitted on the remaining fitting groups and applied
+unchanged to stopping inputs. The chosen iteration count is then used to refit
+fresh preprocessing and the model on that entire training fold. Final
+development fitting repeats this same nested policy. Outer CV evaluation
+groups and holdout groups never supply stopping data. Both fitting and stopping
+receive their matching interval weights. Selection still uses mean CV MAE.
+
+`leaderboard.csv` and the consolidated model comparisons include `cv_iterations`,
+`cv_training`, `final_iterations` and `final_training`. The training JSON fields
+record fitting/stopping/refit groups, row and weight totals, actual model
+iterations and probe iterations. `candidate_audit.json` retains these details
+for every attempted fit, including unsuccessful candidates. Group identities
+stay in private exports. The eight XGBoost settings add 80 CV model fits and
+40 stopping probes per five-fold target, plus selected refits. Unavailable,
+unsupported or unloadable backends have explicit statuses; base models continue.
+
 Imputation, numeric scaling and
 categorical encoding are learned within training folds. Model selection uses
 cross-validation; the selected model is fitted on development groups only and
 evaluated on reserved holdout groups. Saved models do not train on holdout.
 Original `delta_days` interval weights are used for training and reported errors.
+Dependency versions, including optional backend presence/version, now contribute
+to the full-run fingerprint and are recorded in its report. Installing or
+changing XGBoost requires a new run; its external ERA5 cache can still be reused.
 
 All targets reuse the same group assignments. Declared source/airfield groups
 sharing identical supplied coordinates are joined before splitting; this does
