@@ -12,6 +12,8 @@ from numbers import Real
 import re
 from typing import TextIO
 
+from .climate_progress import sanitize_climate_event
+
 
 MODEL_STATUSES = ("modeled", "baseline_selected", "constant_target", "no_valid_target",
                   "insufficient_groups", "insufficient_fold_coverage", "no_features")
@@ -20,6 +22,22 @@ STAGE_LABELS = {"started": "Started", "completed": "Completed", "skipped": "Skip
                 "reused": "Reused", "failed": "Failed", "interrupted": "Interrupted"}
 RUN_LABELS = {"completed": "Completed", "completed_with_warnings": "Completed with warnings",
               "failed": "Failed", "interrupted": "Interrupted", "quality_gate_failed": "Quality gate failed"}
+CLIMATE_LABELS = {
+    "initializing": "initializing weather retrieval",
+    "loading_location": "loading location",
+    "cache_check": "checking weather cache",
+    "cache_hit": "reusing cached weather",
+    "requesting": "waiting for CDS / downloading",
+    "downloaded": "weather download received",
+    "parsing": "reading weather data",
+    "preparing": "preparing hourly weather",
+    "location_complete": "location ready",
+    "location_failed": "location has no usable weather",
+    "calculating": "calculating inspection climate features",
+    "writing": "writing climate results",
+    "complete": "climate processing complete",
+    "fallback": "trying weather fallback",
+}
 
 
 def _quoted(value: object) -> str:
@@ -37,6 +55,40 @@ def _number(value: object, places: int | None = None) -> str | None:
 
 def _code(value: object, fallback: str) -> str:
     return value if isinstance(value, str) and re.fullmatch(r"[A-Z][A-Z0-9_]{0,95}", value) else fallback
+
+
+def _duration(value: object) -> str | None:
+    if _number(value) is None or value < 0:
+        return None
+    minutes, seconds = divmod(int(value), 60)
+    hours, minutes = divmod(minutes, 60)
+    return (f"{hours}h " if hours else "") + (f"{minutes}m " if minutes or hours else "") + f"{seconds}s"
+
+
+def _climate_lines(event: dict) -> list[str]:
+    safe = sanitize_climate_event(event)
+    if safe is None:
+        return []
+    label = CLIMATE_LABELS.get(safe.get("phase"))
+    if label is None:
+        return []
+    stage = event.get("stage")
+    line = "Climate" + (f" {_quoted(stage)}" if isinstance(stage, str) and stage else "") + ": " + label
+    values = []
+    if "location_index" in safe and "total_locations" in safe:
+        values.append(f"location={safe['location_index']:,}/{safe['total_locations']:,}")
+    if "locations_completed" in safe and "total_locations" in safe:
+        values.append(f"completed={safe['locations_completed']:,}/{safe['total_locations']:,}")
+    if "rows_completed" in safe and "total_rows" in safe and safe["phase"] in {"calculating", "writing", "complete"}:
+        values.append(f"rows={safe['rows_completed']:,}/{safe['total_rows']:,}")
+    values += _counts(safe, (("cache_hits", "cache hits"), ("requests", "requests")))
+    if safe["phase"] in {"location_complete", "location_failed", "complete"}:
+        values += _counts(safe, (("usable_locations", "usable locations"), ("missing_locations", "missing locations")))
+    if "start_year" in safe and "end_year" in safe:
+        values.append(f"years={safe['start_year']}-{safe['end_year']}")
+    if safe.get("dataset") in {"era5-land", "era5"}:
+        values.append("source=" + {"era5-land": "ERA5-Land", "era5": "ERA5"}[safe["dataset"]])
+    return [line + (" | " + "; ".join(values) if values else "")]
 
 
 def _counts(stats: dict, fields: tuple[tuple[str, str], ...]) -> list[str]:
@@ -140,6 +192,20 @@ class FullProgress:
     @staticmethod
     def _render(event: dict) -> list[str]:
         kind = event.get("event")
+        if kind == "progress_window":
+            return [f"Progress window: {_quoted(event.get('path', ''))}"]
+        if kind == "climate":
+            return _climate_lines(event)
+        if kind == "heartbeat":
+            stage = event.get("stage")
+            line = "Still running" + (f" {_quoted(stage)}" if isinstance(stage, str) and stage else "")
+            elapsed, idle = _duration(event.get("elapsed_seconds")), _duration(event.get("idle_seconds"))
+            values = []
+            if elapsed is not None:
+                values.append("elapsed=" + elapsed)
+            if idle is not None:
+                values.append("last subprocess output=" + idle + " ago")
+            return [line + (" | " + "; ".join(values) if values else "")]
         if kind == "setup_started":
             lines = ["Verifying setup for resume" if event.get("resume") else "Started setup",
                      f"  Workspace: {_quoted(event.get('workspace', ''))}"]
@@ -178,6 +244,27 @@ class FullProgress:
             if event.get("report") is not None:
                 lines.append(f"  Setup report: {_quoted(event['report'])}")
             return lines
+        if kind == "setup_issue":
+            roles = {"mapping": "Mapping JSON", "csv_dir": "Location CSV directory", "cdv_curves": "CDV profile",
+                     "deduct_curves": "Deduct-curve profile", "families": "Family profile"}
+            states = {"missing": "not found", "not_file": "not a file", "not_directory": "not a directory",
+                      "unreadable": "cannot be read"}
+            if event.get("role") not in roles or event.get("status") not in states:
+                return []
+            return [f"Setup issue: {roles[event['role']]} {states[event['status']]}: {_quoted(event.get('path', ''))}"]
+        if kind == "mapping_entry":
+            status = event.get("status")
+            if status not in {"invalid", "normalized"}:
+                return []
+            label = "Invalid mapping entry" if status == "invalid" else "Normalized mapping entry"
+            source = event.get("source_key")
+            line = f"{label}: source={_quoted(source if isinstance(source, str) else '(non-string)')}"
+            if isinstance(event.get("location_value"), str):
+                line += f" | location={_quoted(event['location_value'])}"
+            line += " | " + _code(event.get("reason"), "INVALID_LOCATION_MAPPING" if status == "invalid" else "PATH_NORMALIZED")
+            if status == "normalized":
+                line += f" | {_quoted(event.get('source_filename', ''))} -> {_quoted(event.get('relative_location', ''))}"
+            return [line]
         if kind == "setup_failed":
             return ["Failed setup: " + _code(event.get("code"), "PRIVATE_SETUP_FAILED"),
                     f"  Details: {_quoted(event.get('log', ''))}"]

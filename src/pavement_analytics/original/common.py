@@ -8,9 +8,11 @@ import hashlib
 import json
 import os
 from pathlib import Path
+import queue
 import re
 import subprocess
 import sys
+import threading
 import time
 import traceback
 
@@ -18,8 +20,11 @@ import numpy as np
 import pandas as pd
 
 from ..security import Boundary, reject_links, source_root
+from ..climate_progress import parse_progress_line
 
 ROOT = Path(__file__).resolve().parents[1]
+PROCESS_HEARTBEAT_SECONDS = 15.0
+PROCESS_POLL_SECONDS = 0.25
 IDENTITIES = {"SectionUniqueID", "_source_file", "_source_file_start", "_source_file_end",
               "partition_airfield", "partition_section", "partition_original_airfield"}
 IDENTITIES |= {name + suffix for name in ("NetworkID", "BranchID", "SectionID", "group_id")
@@ -248,26 +253,84 @@ class Run:
         return step["stats"]
 
     def process(self, argv):
-        """Use argv directly: paths with spaces work, no shell interpretation."""
+        """Keep child diagnostics private while reporting typed progress.
+
+        A reader thread avoids blocking the parent in ``readline`` during CDS
+        queueing or other silent work. The parent alone invokes callbacks and
+        writes logs; it can therefore emit heartbeats and handle interrupts on
+        both Windows and POSIX without polling a pipe descriptor.
+        """
         print("Command:", repr([str(a) for a in argv]), flush=True)
         process = subprocess.Popen([str(a) for a in argv], stdout=subprocess.PIPE,
                                    stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="replace")
+        output = queue.Queue()
+
+        def read_output():
+            try:
+                for line in process.stdout:
+                    output.put(("line", line))
+            except Exception as error:
+                output.put(("error", error))
+            finally:
+                output.put(("eof", None))
+
+        reader = threading.Thread(target=read_output, name="pavement-stage-output", daemon=True)
+        reader.start()
+        started = last_output = time.monotonic()
+        next_heartbeat = started + PROCESS_HEARTBEAT_SECONDS
+        eof = False
         notices = []
         try:
-            for line in process.stdout:
-                self.log.write(line)
-                self.log.flush()
-                if re.search(r"\[(WARN|ERROR)\]|^\s*!|warning:", line, re.I):
-                    notices.append(line.strip())
+            while True:
+                try:
+                    kind, value = output.get(timeout=PROCESS_POLL_SECONDS)
+                except queue.Empty:
+                    kind, value = None, None
+                if kind == "line":
+                    last_output = time.monotonic()
+                    self.log.write(value)
+                    self.log.flush()
+                    event = parse_progress_line(value)
+                    if event is not None:
+                        self.emit({**event, "stage": self.current})
+                    if re.search(r"\[(WARN|ERROR)\]|^\s*!|warning:", value, re.I):
+                        notices.append(value.strip())
+                elif kind == "error":
+                    raise value
+                elif kind == "eof":
+                    eof = True
+                code = process.poll()
+                if code is not None and output.empty():
+                    # Normally the reader reaches EOF first. A descendant may
+                    # retain the pipe after its parent exits: never hang the run
+                    # waiting for that unrelated writer to close it.
+                    if not eof:
+                        reader.join(timeout=PROCESS_POLL_SECONDS)
+                    if output.empty():
+                        break
+                now = time.monotonic()
+                if code is None and now >= next_heartbeat:
+                    self.emit({"event": "heartbeat", "stage": self.current,
+                               "elapsed_seconds": round(now - started, 3),
+                               "idle_seconds": round(now - last_output, 3)})
+                    next_heartbeat = now + PROCESS_HEARTBEAT_SECONDS
             code = process.wait()
         except BaseException:
-            process.terminate()
+            if process.poll() is None:
+                process.terminate()
             try:
                 process.wait(timeout=10)
             except subprocess.TimeoutExpired:
                 process.kill()
                 process.wait()
             raise
+        finally:
+            reader.join(timeout=1)
+            # Closing a text stream while another thread holds its read lock
+            # can block. A retained descendant pipe stays with the daemon
+            # reader, which exits naturally when that writer closes it.
+            if not reader.is_alive():
+                process.stdout.close()
         if notices:
             self.warn("STAGE_NOTICES", f"Subprocess reported {len(notices)} warnings/errors. See logs/{self.current}.log. First: {notices[0]}", len(notices))
         if code:

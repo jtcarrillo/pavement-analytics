@@ -19,6 +19,10 @@ configuration, SDK and network access are not used. Models, predictions, data
 and reports remain local in a new private workspace under `~/pavement-runs/`.
 The command displays local input/mapping paths, stage progress and basic counts.
 Detailed diagnostics and raw subprocess output stay in private logs.
+`--open` opens the local progress page when the run starts, then opens the
+consolidated dashboard after success. Use `--progress` to open only the progress
+page. Every full run writes `progress.html` and `progress.json` in its workspace,
+even when no browser is opened.
 
 The original input and auxiliary files are still required. Setup discovers
 `pavement-full.json`, then `pipeline.json`, then `pipeline.example.json`, looking
@@ -47,9 +51,23 @@ Legacy `datarobot` settings are recorded as ignored, including `train`.
 | ERA5 cache | Profile `cache_dir`, `--cache-dir`, or a sibling `original-era5-cache` beside run workspaces |
 
 Discovery uses the profile directory, data directory and data's parent. The
-location JSON retains its original source-filename to location-CSV mapping;
-location CSVs contain `LOCATION(DEGREES)`. Referenced location CSVs are excluded
-from inspection discovery. Locations and the CDV profile are never guessed.
+location JSON maps inspection filenames to CSV paths relative to `csv_dir`:
+
+```json
+{
+  "inspection_export.xlsx": "locations.csv"
+}
+```
+
+Location CSVs contain `LOCATION(DEGREES)`. Source keys containing a path are
+normalized to a filename only when it matches exactly one selected input;
+colliding aliases or ambiguous filenames are rejected. Absolute location CSV
+paths are accepted only within the configured `csv_dir` and are normalized to
+relative paths. Location paths cannot use parent traversal or symlinks. Setup reports
+each invalid entry's reason before `INVALID_LOCATION_MAPPING` and saves the
+entry decisions under `mapping_entries` in `full_setup_report.json`.
+Referenced location CSVs are excluded from inspection discovery. Locations and
+the CDV profile are never guessed.
 The original digitized CDV table remains a private input and is not distributed
 with this public package.
 
@@ -58,6 +76,12 @@ dates, and privately copies the selected mapping, location files and profiles.
 Original files are unchanged. Ambiguous date order requires `--date-format`.
 `full_setup_report.json` records hashes, original-to-normalized source mappings,
 date/header decisions, missing inputs and forced full-stage settings.
+Before processing, setup checks the selected mapping, location directory, CDV
+profile and any supplied deduct-curve or family profile. It lists every missing,
+wrong-type or unreadable path before `FULL_SETUP_INPUT_PATHS_INVALID`; the
+`input_checks` report entries include each role, path and status. Correct the
+selected paths in the private profile or CLI options; setup does not search for
+replacements after these checks fail.
 
 Keep the ERA5 cache outside the input directory, the run workspace and all Git
 checkouts. Safe cache paths in an existing profile are reused. If an inherited
@@ -74,8 +98,21 @@ a legacy cache setting immediately:
 pavement full "/path/to/private/data" --cache-dir "$HOME/pavement-cache/era5" --open
 ```
 
-This starts a fresh run after a setup failure; `--resume` requires completed
-setup. A compact private profile in the **parent** of the data folder can be:
+The cache boundary checks are unchanged. To reuse an existing cache inside an
+old checkout, copy it to a **new** destination outside every Git checkout, input
+directory and run workspace, then select that copy explicitly. For example,
+with generic private paths and an unused destination:
+
+```bash
+mkdir -p "/private/examples/pavement-cache"
+cp -R "/private/examples/legacy-checkout/cache/era5" "/private/examples/pavement-cache/era5"
+pavement full "/private/examples/inspection-data" --cache-dir "/private/examples/pavement-cache/era5" --open
+```
+
+This leaves the old cache in place. Use ordinary directories, not symlink aliases.
+
+After correcting a setup failure, start a fresh run; `--resume` requires
+completed setup. A compact private profile in the **parent** of the data folder can be:
 
 ```json
 {
@@ -127,6 +164,55 @@ Progress includes local file paths and aggregate results; keep captured terminal
 output with the private run. Raw data rows, credentials, complete configuration
 objects and exception details are not forwarded to the terminal. Changing this
 display option does not change models or invalidate a verified resume.
+
+### Live progress and existing runs
+
+The local `progress.html` page refreshes while the run is active and shows the
+current stage, elapsed time, selected inputs, recent progress messages and time
+since the latest signal. It reads no remote resources and needs no HTTP server.
+The corresponding `progress.json` retains structured display state.
+
+During ERA5 processing, progress distinguishes location loading, cache reuse,
+requests, parsing and feature calculations. Location and inspection-row counters
+show how much work has finished. The parent process emits a heartbeat about
+every 15 seconds while a subprocess is running, even if the child has printed
+nothing. A heartbeat establishes that the child process is still active; it
+does not prove that the remote CDS job is advancing.
+
+The request phase covers both the CDS queue and the subsequent download.
+The display therefore says "waiting for CDS / downloading" rather than claiming
+a precise queue position, transfer percentage or completion time. After weather
+loading finishes, calculating climate features for inspection intervals can
+also take time; this has its own row counter.
+
+For a pipeline already running, open a second terminal and monitor it without
+restarting it:
+
+```bash
+# Latest run under ~/pavement-runs
+pavement monitor --open
+
+# A particular run workspace
+pavement monitor "/path/to/existing/private/run" --open
+```
+
+Keep the monitor command running to follow changes. Ctrl+C stops the monitor
+only; the separate pipeline process keeps running. Add `--once` to write one
+snapshot and exit instead of following the run.
+
+For a run started by an older version, the monitor uses its saved checkpoints
+and private stage logs. It can show recorded phase/location activity and log
+freshness, but cannot prove the original child is still alive or reconstruct
+row counts that were never recorded. Detailed counters and new heartbeats
+require a run started with the updated code. Updating the installed code does
+not add instrumentation to an already-running process. Code changes also
+require a new run under the existing resume fingerprint rules; a new run may
+still reuse its external ERA5 cache.
+
+A missing-location warning counts inspection pairs without usable coordinates;
+it does not identify a stalled CDS request. Those pairs cannot receive their
+location's climate features until the private mapping/location inputs are fixed.
+The progress display does not invent coordinates or silently repair mappings.
 
 All stages are recorded in `pipeline/run_report.json` and `run_report.md` with
 status, timing, counts, warnings and artifact checksums. Empty surface populations

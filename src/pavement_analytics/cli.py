@@ -61,7 +61,12 @@ def parser() -> Parser:
     full.add_argument("--fit-deduct-curves", action="store_true", help="Also run the original optional curve-fitting stage")
     full.add_argument("--resume", action="store_true", help="Reuse verified completed stages; requires --workspace")
     full.add_argument("--quiet", action="store_true", help="Print fixed status/error codes only; save progress in the run logs")
-    full.add_argument("--open", action="store_true", help="Open the consolidated full-pipeline dashboard")
+    full.add_argument("--progress", action="store_true", help="Open a live local progress window immediately")
+    full.add_argument("--open", action="store_true", help="Open live progress now and the consolidated dashboard after success")
+    monitor = commands.add_parser("monitor", help="View progress of an existing full run without restarting it")
+    monitor.add_argument("monitor_workspace", type=Path, nargs="?", help="Existing full-run workspace; defaults to the latest run under ~/pavement-runs")
+    monitor.add_argument("--open", action="store_true", help="Open the local progress window")
+    monitor.add_argument("--once", action="store_true", help="Write one snapshot instead of following an older run")
     return root
 
 
@@ -89,6 +94,19 @@ def main(argv=None) -> int:
     changed_opt_in = False
     try:
         args = parser().parse_args(argv)
+        if args.command == "monitor":
+            from .monitor import monitor_existing
+            if args.workspace is not None and args.monitor_workspace is not None:
+                raise SafeError("DUPLICATE_WORKSPACE_ARGUMENT")
+            previous_opt_in = os.environ.get("PAVEMENT_PRIVATE_EXECUTION")
+            os.environ["PAVEMENT_PRIVATE_EXECUTION"] = "1"
+            changed_opt_in = True
+            refuse_public_execution()
+            with private_umask():
+                monitor_existing(args.monitor_workspace or args.workspace,
+                                 open_window=args.open, once=args.once)
+            print("PRIVATE_PROGRESS_MONITOR_COMPLETE")
+            return 0
         if args.command in {"analyze", "study", "full"}:
             from .autorun import new_workspace
             if args.workspace is not None and args.analyze_workspace is not None:
@@ -119,10 +137,16 @@ def main(argv=None) -> int:
                 progress = None
                 if args.command == "full":
                     from .progress import FullProgress
+                    from .live_progress import LiveProgress
                     progress_log = stack.enter_context(boundary.output(log / "progress.log").open("a", encoding="utf-8"))
-                    progress = FullProgress(None if args.quiet else sys.stdout, progress_log)
+                    progress = LiveProgress(boundary, FullProgress(None if args.quiet else sys.stdout, progress_log))
+                    progress({"event": "progress_window", "path": str(progress.path)})
                 with contextlib.redirect_stdout(stream), contextlib.redirect_stderr(stream):
                     try:
+                        if args.command == "full" and (args.open or args.progress):
+                            from .monitor import open_local_window
+                            if not open_local_window(progress.path):
+                                progress({"event": "warning", "stage": "setup", "code": "PROGRESS_WINDOW_OPEN_FAILED"})
                         if args.command == "init":
                             initialize(boundary)
                             code = "PRIVATE_CONFIGURATION_CREATED"
@@ -159,7 +183,9 @@ def main(argv=None) -> int:
                         else:
                             from .pipeline import run
                             code = run(boundary, args.config, resume=args.resume)
-                    except Exception as error:
+                    except BaseException as error:
+                        if args.command == "full" and progress is not None:
+                            progress.finish("interrupted" if isinstance(error, KeyboardInterrupt) else "failed")
                         if args.command == "study":
                             status = boundary.output("results/study_status.json")
                             if status.exists():

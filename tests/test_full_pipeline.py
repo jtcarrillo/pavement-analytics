@@ -113,6 +113,9 @@ class FullPipelineTests(unittest.TestCase):
         inherited_cache = legacy_checkout / "weather_cache"
         self.settings["cache_dir"] = str(inherited_cache)
         self.profile.write_text(json.dumps(self.settings))
+        mapping = json.loads(self.mapping.read_text())
+        self.mapping.write_text(json.dumps({str(self.raw / source): str(self.locations / location)
+                                            for source, location in mapping.items()}))
         output = self.run_cli()
         self.assertTrue(output.rstrip().endswith("PRIVATE_FULL_PIPELINE_COMPLETE"))
         self.assertIn(str(self.mapping), output)
@@ -128,6 +131,9 @@ class FullPipelineTests(unittest.TestCase):
                          output.removesuffix("PRIVATE_FULL_PIPELINE_COMPLETE\n"))
         selected_cache = self.work.parent / "original-era5-cache"
         setup = json.loads((self.work / "full_setup_report.json").read_text())
+        self.assertEqual(len(setup["mapping_entries"]), 10)
+        self.assertTrue(all(item["status"] == "normalized" for item in setup["mapping_entries"]))
+        self.assertIn("Normalized mapping entry", output)
         self.assertEqual(setup["climate_cache"], {
             "source": "profile", "requested": str(inherited_cache), "selected": str(selected_cache),
             "fallback_reason": "CLIMATE_CACHE_MUST_NOT_BE_VERSIONED"})
@@ -158,6 +164,10 @@ class FullPipelineTests(unittest.TestCase):
         self.assertTrue(summary.original_target.str.endswith(" deduct_end").all())
         self.assertFalse(summary.original_target.eq("DetRatePerYear").any())
         html = (pipeline / "10_report/dashboard.html").read_text()
+        progress_state = json.loads((self.work / "progress.json").read_text())
+        self.assertIn(progress_state["status"], {"completed", "completed_with_warnings"})
+        self.assertEqual(progress_state["dashboard"], (pipeline / "10_report/dashboard.html").as_uri())
+        self.assertNotIn('http-equiv="refresh"', (self.work / "progress.html").read_text())
         self.assertIn("retrospective", html.lower())
         self.assertNotIn("Historical window: 365", html)
         self.assertEqual(list(self.public.iterdir()), [])
@@ -333,6 +343,39 @@ class FullPipelineTests(unittest.TestCase):
         self.assertNotIn('Started "09_local_models"', output)
         self.assertIn("generated-sensitive-error-detail", (self.work / "logs/runtime.log").read_text())
 
+    def test_stale_setup_paths_are_reported_together_before_reading_inputs(self):
+        missing_mapping = self.root / "old/mapping.json"
+        missing_locations = self.root / "old/locations"
+        self.settings.update(mapping=str(missing_mapping), csv_dir=str(missing_locations))
+        self.profile.write_text(json.dumps(self.settings))
+        output = self.run_cli(expected=2)
+        self.assertIn("FULL_SETUP_INPUT_PATHS_INVALID", output)
+        self.assertIn("Mapping JSON not found", output)
+        self.assertIn("Location CSV directory not found", output)
+        self.assertIn(str(missing_mapping), output)
+        self.assertIn(str(missing_locations), output)
+        self.assertNotIn("Reading input", output)
+        setup = json.loads((self.work / "full_setup_report.json").read_text())
+        self.assertEqual({item["role"]: item["status"] for item in setup["input_checks"]},
+                         {"mapping": "missing", "csv_dir": "missing", "cdv_curves": "ready"})
+        self.assertFalse(missing_mapping.exists())
+
+    def test_invalid_mapping_entries_are_diagnosed_without_dumping_nested_values(self):
+        self.mapping.write_text(json.dumps({"export_00.csv": {"data": "generated-sensitive-value"},
+                                            "export_01.csv": "../outside.csv"}))
+        output = self.run_cli(expected=2)
+        self.assertEqual(output.count("Invalid mapping entry:"), 2)
+        for expected in ("export_00.csv", "export_01.csv", "LOCATION_VALUE_MUST_BE_NONEMPTY_STRING",
+                         "LOCATION_PARENT_COMPONENT_FORBIDDEN", "INVALID_LOCATION_MAPPING"):
+            self.assertIn(expected, output)
+        self.assertNotIn("generated-sensitive-value", output)
+        self.assertNotIn("Reading input", output)
+        setup = json.loads((self.work / "full_setup_report.json").read_text())
+        self.assertEqual([row["status"] for row in setup["mapping_entries"]], ["invalid", "invalid"])
+        self.assertIsNone(setup["mapping_entries"][0]["location_value"])
+        self.assertNotIn("generated-sensitive-value", json.dumps(setup))
+        self.assertFalse((self.work / "inputs").exists())
+
     def test_setup_read_failure_identifies_current_input_before_stopping(self):
         failed_input = self.raw / "export_00.csv"
         failed_input.write_text("bad_column\ngenerated-sensitive-cell\n")
@@ -342,6 +385,9 @@ class FullPipelineTests(unittest.TestCase):
         self.assertIn("Failed setup", output)
         self.assertNotIn('Started "01_split"', output)
         self.assertNotIn("generated-sensitive-cell", output)
+        progress = json.loads((self.work / "progress.json").read_text())
+        self.assertEqual(progress["status"], "failed")
+        self.assertNotIn("generated-sensitive-cell", (self.work / "progress.html").read_text())
 
     def test_setup_summary_identifies_unmapped_and_missing_location_files(self):
         mapping = json.loads(self.mapping.read_text())

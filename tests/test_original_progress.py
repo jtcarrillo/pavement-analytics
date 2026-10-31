@@ -3,7 +3,10 @@ import contextlib
 import io
 import json
 from pathlib import Path
+import subprocess
+import sys
 import unittest
+from unittest.mock import patch
 
 import numpy as np
 
@@ -135,6 +138,95 @@ class OriginalProgressTests(unittest.TestCase):
         self.assertIn("START 01_split", output.getvalue())
         self.assertIn("DONE  01_split", output.getvalue())
         self.assertIn("COMPLETED:", output.getvalue())
+
+    def test_subprocess_progress_is_forwarded_while_raw_output_stays_in_log(self):
+        run = self.make_run()
+        lines = [
+            "Generated private raw diagnostic",
+            'PAVEMENT_PROGRESS {"event":"climate","phase":"requesting","location_index":1,"total_locations":2}',
+            'PAVEMENT_PROGRESS {"event":"climate","phase":"PRIVATE_MARKER"}',
+            'PAVEMENT_PROGRESS {malformed PRIVATE_MARKER',
+            '[WARN] Generated private warning detail',
+        ]
+        script = "\n".join("print(" + repr(line) + ", flush=True)" for line in lines)
+        def stage():
+            run.process([sys.executable, "-u", "-c", script])
+            return {"rows": 1}, []
+        self.quiet(run.stage, "04_climate_PCC", stage)
+        climate = [event for event in self.events if event["event"] == "climate"]
+        self.assertEqual(len(climate), 1)
+        self.assertEqual(climate[0]["stage"], "04_climate_PCC")
+        self.assertEqual(climate[0]["phase"], "requesting")
+        self.assertEqual(climate[0]["location_index"], 1)
+        warnings = [event for event in self.events if event["event"] == "warning"]
+        self.assertEqual(warnings, [{"event": "warning", "stage": "04_climate_PCC",
+                                     "code": "STAGE_NOTICES", "count": 1}])
+        serialized = json.dumps(self.events)
+        self.assertNotIn("PRIVATE_MARKER", serialized)
+        self.assertNotIn("Generated private", serialized)
+        log = (self.out / "logs/04_climate_PCC.log").read_text()
+        self.assertTrue(all(line in log for line in lines))
+
+    def test_silent_subprocess_emits_heartbeat_before_completion(self):
+        finished = self.root / "child-finished"
+        observed_before_completion = []
+        def observe(event):
+            self.events.append(event)
+            if event["event"] == "heartbeat":
+                observed_before_completion.append(not finished.exists())
+        run = self.make_run(progress=observe)
+        script = ("import time\nfrom pathlib import Path\n"
+                  "time.sleep(0.15)\nPath(" + repr(str(finished)) + ").write_text('done')")
+        def stage():
+            run.process([sys.executable, "-u", "-c", script])
+            return {"rows": 0}, []
+        with patch("pavement_analytics.original.common.PROCESS_HEARTBEAT_SECONDS", .02), \
+                patch("pavement_analytics.original.common.PROCESS_POLL_SECONDS", .005):
+            self.quiet(run.stage, "04_climate_PCC", stage)
+        self.assertTrue(finished.exists())
+        self.assertIn(True, observed_before_completion)
+        beats = [event for event in self.events if event["event"] == "heartbeat"]
+        self.assertTrue(all(event["stage"] == "04_climate_PCC" for event in beats))
+        self.assertTrue(all(0 <= event["idle_seconds"] <= event["elapsed_seconds"] for event in beats))
+        self.assertTrue(all(set(event) == {"event", "stage", "elapsed_seconds", "idle_seconds"}
+                            for event in beats))
+
+    def test_subprocess_failure_keeps_diagnostics_and_reports_stage_failure(self):
+        run = self.make_run()
+        def stage():
+            run.process([sys.executable, "-u", "-c",
+                         "print('Generated private child failure', flush=True); raise SystemExit(3)"])
+            self.fail("Nonzero child exit must fail the stage")
+        with self.assertRaisesRegex(RuntimeError, "exited with code 3"):
+            self.quiet(run.stage, "04_climate_PCC", stage)
+        self.assertEqual(self.events[-1]["status"], "failed")
+        self.assertNotIn("Generated private child failure", json.dumps(self.events))
+        self.assertIn("Generated private child failure", (self.out / "logs/04_climate_PCC.log").read_text())
+
+    def test_interrupt_during_silent_child_stops_process_and_closes_pipe(self):
+        children = []
+        original_popen = subprocess.Popen
+        def launch(*args, **kwargs):
+            child = original_popen(*args, **kwargs)
+            children.append(child)
+            return child
+        def observe(event):
+            self.events.append(event)
+            if event["event"] == "heartbeat":
+                raise KeyboardInterrupt()
+        run = self.make_run(progress=observe)
+        def stage():
+            run.process([sys.executable, "-u", "-c", "import time; time.sleep(30)"])
+            self.fail("Interrupt must propagate")
+        with patch("pavement_analytics.original.common.PROCESS_HEARTBEAT_SECONDS", .02), \
+                patch("pavement_analytics.original.common.PROCESS_POLL_SECONDS", .005), \
+                patch("pavement_analytics.original.common.subprocess.Popen", side_effect=launch):
+            with self.assertRaises(KeyboardInterrupt):
+                self.quiet(run.stage, "04_climate_PCC", stage)
+        self.assertEqual(len(children), 1)
+        self.assertIsNotNone(children[0].poll())
+        self.assertTrue(children[0].stdout.closed)
+        self.assertEqual(self.events[-1]["status"], "interrupted")
 
 
 if __name__ == "__main__":

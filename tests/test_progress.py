@@ -83,6 +83,25 @@ class ProgressTests(unittest.TestCase):
         self.assertNotIn("raw private", result)
         self.assertIn('Reused "05_fit_curves" | previously skipped', result)
 
+    def test_setup_diagnostics_show_fixed_reasons_and_escape_mapping_paths(self):
+        self.progress({"event": "setup_issue", "role": "mapping", "status": "missing",
+                       "path": "/private/old\nmapping.json"})
+        self.progress({"event": "mapping_entry", "status": "invalid", "source_key": "input\x1b.csv",
+                       "location_value": {"secret": "PRIVATE_MARKER"},
+                       "reason": "LOCATION_VALUE_MUST_BE_NONEMPTY_STRING"})
+        self.progress({"event": "mapping_entry", "status": "normalized", "source_key": "/old/input.csv",
+                       "location_value": "/private/site.csv", "source_filename": "input.csv",
+                       "relative_location": "site.csv", "reason": "PATHS_NORMALIZED"})
+        self.progress({"event": "setup_issue", "role": "unknown", "status": "missing", "path": "PRIVATE_MARKER"})
+        result = self.console.getvalue()
+        self.assertIn('Mapping JSON not found: "/private/old\\nmapping.json"', result)
+        self.assertIn('source="input\\u001b.csv"', result)
+        self.assertIn("LOCATION_VALUE_MUST_BE_NONEMPTY_STRING", result)
+        self.assertIn('"input.csv" -> "site.csv"', result)
+        self.assertNotIn("PRIVATE_MARKER", result)
+        self.assertNotIn("\x1b", result)
+        self.assertEqual(self.log.getvalue(), result)
+
     def test_stage_stats_whitelist_reports_scientific_support_without_raw_values(self):
         events = [
             ("02_pairs_PCC", {"total_pairs": 800, "sections_total": 90}),
@@ -108,6 +127,51 @@ class ProgressTests(unittest.TestCase):
             self.assertIn(text, result)
         self.assertNotIn("private", result)
         self.assertNotIn("PRIVATE_CREDENTIAL_MARKER", result)
+
+    def test_climate_events_explain_waiting_cache_and_feature_progress(self):
+        base = {"event": "climate", "stage": "04_climate_PCC", "location_index": 2,
+                "total_locations": 12, "locations_completed": 1, "cache_hits": 1,
+                "requests": 1, "start_year": 2000, "end_year": 2020, "dataset": "era5-land"}
+        for phase in ("cache_hit", "requesting", "downloaded", "parsing", "preparing"):
+            self.progress({**base, "phase": phase})
+        self.progress({**base, "phase": "location_failed", "locations_completed": 2,
+                       "usable_locations": 1, "missing_locations": 1})
+        self.progress({**base, "phase": "calculating", "rows_completed": 100, "total_rows": 1200})
+        self.progress({**base, "phase": "complete", "rows_completed": 1200, "total_rows": 1200})
+        result = self.console.getvalue()
+        for value in ('Climate "04_climate_PCC"', "reusing cached weather", "waiting for CDS / downloading",
+                      "location=2/12", "completed=2/12", "cache hits=1", "requests=1", "years=2000-2020",
+                      "source=ERA5-Land", "location has no usable weather", "missing locations=1",
+                      "rows=100/1,200", "rows=1,200/1,200", "climate processing complete"):
+            self.assertIn(value, result)
+        self.assertEqual(self.console.getvalue(), self.log.getvalue())
+        self.assertEqual(self.console.flushes, 8)
+
+    def test_climate_unknown_fields_and_invalid_counters_never_reach_output(self):
+        self.progress({"event": "climate", "phase": "requesting", "stage": "04_climate\n\x1b",
+                       "secret": "PRIVATE_MARKER", "coordinates": "PRIVATE_MARKER"})
+        result = self.console.getvalue()
+        self.assertIn('"04_climate\\n\\u001b"', result)
+        self.assertNotIn("PRIVATE_MARKER", result)
+        self.assertNotIn("\x1b", result)
+        for event in ({"phase": "PRIVATE_MARKER"}, {"phase": "requesting", "cache_hits": "PRIVATE_MARKER"},
+                      {"phase": "calculating", "rows_completed": float("nan")},
+                      {"phase": "calculating", "rows_completed": True},
+                      {"phase": "calculating", "rows_completed": -1}):
+            self.progress({"event": "climate", **event})
+        self.assertEqual(self.console.getvalue(), result)
+
+    def test_heartbeat_formats_elapsed_time_and_ignores_raw_details(self):
+        self.progress({"event": "heartbeat", "stage": "04_climate_PCC", "elapsed_seconds": 3725.9,
+                       "idle_seconds": 65.2, "message": "PRIVATE_MARKER", "error": "PRIVATE_MARKER"})
+        self.assertEqual(self.console.getvalue(),
+                         'Still running "04_climate_PCC" | elapsed=1h 2m 5s; last subprocess output=1m 5s ago\n')
+        self.progress({"event": "heartbeat", "stage": "stage\n\x1b", "elapsed_seconds": "PRIVATE_MARKER",
+                       "idle_seconds": -1})
+        result = self.console.getvalue()
+        self.assertIn('Still running "stage\\n\\u001b"\n', result)
+        self.assertNotIn("PRIVATE_MARKER", result)
+        self.assertEqual(self.log.getvalue(), result)
 
     def test_terminal_controls_are_escaped_in_paths_stage_and_target_names(self):
         hostile = 'generated\n\r\x1b[2J\t\u202e"file'
