@@ -65,6 +65,22 @@ class StudyReportingTests(unittest.TestCase):
         self.assertNotIn('https://', html)
         self.assertNotIn('<script', html)
 
+    def test_failed_candidate_statuses_survive_consolidation_and_are_visible(self):
+        leaders = pd.read_csv(self.task/'leaderboard.csv')
+        leaders['candidate_status'] = 'completed'
+        failed = pd.DataFrame([{'candidate': 'unavailable', 'feature_set': 'all',
+                                'cv_mae': np.nan, 'candidate_status': 'unavailable',
+                                'error_code': 'MODEL_DEPENDENCY_UNAVAILABLE', 'family': 'generated'}])
+        pd.concat([leaders, failed], ignore_index=True).to_csv(self.task/'leaderboard.csv', index=False)
+        self.summary.update(candidate_failure_count=1, candidate_unavailable_count=1,
+                            candidate_registry_version=1, candidate_family='random_forest')
+        build_study_report(self.out, [self.summary], {})
+        combined = pd.read_csv(self.out/'model_leaderboard.csv')
+        self.assertEqual(combined.loc[combined.candidate.eq('unavailable'), 'candidate_status'].iloc[0], 'unavailable')
+        self.assertIn('MODEL_DEPENDENCY_UNAVAILABLE', set(combined.error_code.dropna()))
+        self.assertIn('Candidate attempts with errors:', (self.out/'dashboard.html').read_text())
+        self.assertEqual(pd.read_csv(self.out/'target_summary.csv').candidate_registry_version.iloc[0], 1)
+
     def test_rank_uses_skill_not_raw_mae_and_preserves_skipped_slots(self):
         second = self.out / 'materials/PCC/family_other'
         second.mkdir(parents=True)

@@ -98,10 +98,11 @@ deployment. A real SSH fetch and real-data acceptance must occur internally.
 
 ## Installation and test troubleshooting
 
-The CI matrix covers Ubuntu with Python 3.11, 3.12 and 3.13, and macOS with
-Python 3.12 and 3.13. Check all matrix results for the revision being deployed;
-runner architecture follows the hosted image and is not a guarantee that every
-local hardware configuration has been tested.
+Hosted CI is disabled. Run the regression suite locally for the revision being
+deployed and record the Python, dependency and operating-system versions. The
+previous CI matrix covered Ubuntu with Python 3.11, 3.12 and 3.13 and macOS with
+Python 3.12 and 3.13; those historical results do not validate later revisions
+on every local hardware configuration.
 
 If installation succeeds but `pavement` is not found, activate the same virtual
 environment in the current terminal, then verify the module entry point:

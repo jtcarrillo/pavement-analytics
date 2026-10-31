@@ -39,6 +39,7 @@ src/pavement_analytics/full_modeling.py
 src/pavement_analytics/io.py
 src/pavement_analytics/metrics.py
 src/pavement_analytics/modeling.py
+src/pavement_analytics/model_registry.py
 src/pavement_analytics/observations.py
 src/pavement_analytics/original/__init__.py
 src/pavement_analytics/original/common.py
@@ -94,6 +95,7 @@ tests/test_publication.py
 tests/test_reporting.py
 tests/test_study.py
 tests/test_study_modeling.py
+tests/test_model_registry.py
 tests/test_synthetic_benchmark.py
 tests/test_study_reporting.py
 tests/test_temp_support.py

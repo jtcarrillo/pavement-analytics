@@ -21,6 +21,7 @@ SUMMARY_COLUMNS = [
     "holdout_rows", "holdout_groups", "nonzero_fraction", "nonclimate_mae",
     "nonclimate_candidate", "climate_added_skill", "importance_reliable",
     "constant_target_scope", "mostly_zero_target",
+    "candidate_family", "candidate_registry_version", "candidate_failure_count", "candidate_unavailable_count",
 ]
 IMPORTANCE_COLUMNS = ["material", "target", "feature", "kind", "is_climate",
                       "importance_mean", "importance_std", "repeats", "reliable",
@@ -28,7 +29,8 @@ IMPORTANCE_COLUMNS = ["material", "target", "feature", "kind", "is_climate",
 PREDICTION_COLUMNS = ["material", "target", "row_id", "group_id", "actual", "prediction",
                       "baseline_prediction", "nonclimate_prediction", "weight"]
 LEADER_COLUMNS = ["material", "target", "candidate", "feature_set", "cv_mae", "cv_mae_std",
-                  "cv_rmse", "cv_wins_vs_baseline"]
+                  "cv_rmse", "cv_wins_vs_baseline", "family", "candidate_status", "error_code",
+                  "folds_completed", "selected", "parameters"]
 SCATTER_LIMIT = 600
 SPARSE_NONZERO_THRESHOLD = .05
 
@@ -341,6 +343,11 @@ def build_study_report(out: Path, summaries: list[dict], audit: dict,
         detail = '<section class="target"><h2>' + _text(material + ' · ' + label) + '</h2>'
         detail += '<p><span class="badge">' + _text(row.get("status") or 'unknown') + '</span> Model: <strong>'
         detail += _text(row.get("candidate") or '—') + '</strong>.</p>'
+        failed, unavailable = row.get("candidate_failure_count"), row.get("candidate_unavailable_count")
+        if (_finite(failed) and failed > 0) or (_finite(unavailable) and unavailable > 0):
+            detail += ('<p class="notice">Candidate attempts with errors: ' + _number(failed, 0) +
+                       '; unavailable or unsupported: ' + _number(unavailable, 0) +
+                       '. See the model comparisons CSV for each status.</p>')
         detail += _table(["MAE skill", "Holdout R²", "MAE", "Baseline MAE", "Holdout rows / groups"], [[
             _percent(row.get("mae_skill")), _number(row.get("holdout_r2")),
             _number(row.get("holdout_mae")), _number(row.get("baseline_mae")),

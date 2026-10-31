@@ -6,16 +6,23 @@ deduct-family sweep. Each target remains a separate regression task for each
 pavement surface. DataRobot's proprietary blueprints are not reproduced exactly.
 
 The current production search contains a weighted-median baseline, two Elastic
-Net configurations and two Random Forest configurations. This change delivers
-the roadmap, a reproducible dataset generator, and a runner for the installed
-candidates. **The five new model families below are planned, not implemented.**
+Net configurations and two Random Forest configurations. R0 provides the
+reproducible dataset and benchmark runner. Build 1 completes R1 with a versioned
+registry and common evaluation/failure contract. **The five new model families
+below are planned, not implemented.**
+
+**Roadmap progress: 22.2% — 2 of 9 phase gates complete (R0 and R1).** Phases R0
+through R8 have equal weight for this count. This is accepted implementation
+coverage, not an estimate of elapsed engineering effort. Build publication,
+merge status and private deployment acceptance are reported separately.
+New algorithm families delivered: 0 of 5. The next build is R2, ExtraTrees.
 
 ## Delivery sequence and dependencies
 
 | Phase | Deliverable | Depends on | Completion gate | Current status |
 |---|---|---|---|---|
 | R0 | Synthetic data, truth contracts and benchmark runner | Existing local search | Reproducible files, isolated groups and existing-model smoke run | Complete in this change |
-| R1 | Candidate registry and common evaluation contract | R0 | Existing candidates retain their selection/prediction behavior | Planned |
+| R1 | Candidate registry and common evaluation contract | R0 | Existing candidates retain their selection/prediction behavior | Complete — Build 1 |
 | R2 | ExtraTrees | R1 | Weighted fitting, mixed inputs, serialization and nonlinear fixtures pass | Planned |
 | R3 | XGBoost | R1, R2 evaluation pattern | Optional dependency and nested stopping tests pass | Planned |
 | R4 | LightGBM | R1, R3 stopping pattern | Weighted validation, category and platform checks pass | Planned |
@@ -95,6 +102,44 @@ location, ERA5 and private curve requirements. Upstream integration remains
 covered by the repository's separate generated pipeline tests.
 
 ## R1 — Candidate registry and evaluation contract
+
+### Delivered in Build 1
+
+- `model_registry.py` declares the implemented IDs `median`, `enet_0.01`,
+  `enet_0.1`, `rf_5` and `rf_20`, model families, fixed parameters, dependency
+  availability, sample-weight support, prediction meaning and worker limits.
+  The public `study_modeling.candidates(seed)` adapter remains usable.
+- The original four learning configurations and preprocessing class locations
+  are retained. The separate legacy rate-model grid is unchanged.
+- `candidate_audit.json` records each candidate/feature-set attempt. The model
+  comparisons CSV retains failed, unavailable and unsupported candidates.
+  Partial-fold results are never ranked as a complete CV score. Raw exceptions
+  go to the private task's `candidate_errors.log`; shared status fields contain
+  fixed codes. Failure of the median baseline still fails the task.
+- A candidate that fails final development refitting or prediction falls back
+  to the next eligible CV result, without using holdout labels to choose it.
+- Summaries and saved models record the registry version, family, parameters
+  and dependency versions. Existing prediction keys and model bundle format
+  remain compatible. Reports show candidate failure/unavailability counts.
+- The benchmark can require a subset, always retaining the median baseline:
+
+```bash
+python -m pavement_analytics.synthetic_benchmark smoke \
+  --workspace "$HOME/pavement-model-tests/data" \
+  --output "$HOME/pavement-model-tests/registry-check" \
+  --candidate enet_0.01
+```
+
+Repeat `--candidate` for multiple implemented IDs. Unknown, duplicate,
+unavailable or unweighted explicitly requested candidates fail clearly rather
+than disappearing from the search. Optional unavailable entries are recorded
+and supported candidates can continue.
+
+Acceptance tests compare every original factory and the complete old grid
+against frozen pre-registry definitions. They check saved prediction parity,
+holdout-label invariance, incomplete CV failure, dependency/constructor/fit/
+prediction/refit errors, feature guards and consolidated failure reporting.
+All tests run locally while hosted CI is disabled.
 
 **Implementation.** Extract candidate construction from
 `study_modeling.candidates` into a small registry. Each entry supplies a stable
@@ -262,10 +307,11 @@ permutation variability, not sampling confidence. If bootstrap uncertainty is
 added, resample complete groups and state which comparisons it estimates.
 
 The runner currently selects the champion and computes its permutation
-importance. Before admitting new families, extend the harness with a required
-candidate selector and candidate-level prediction/serialization reports so a
-model cannot escape testing merely by losing selection. This is R1/R7 work;
-the delivered smoke command intentionally exercises the current registry.
+importance. R1 supplies a required-candidate selector and candidate-level CV
+status records. R7 still adds comprehensive per-candidate prediction and
+serialization reports, so new families cannot escape direct acceptance tests
+merely by losing selection. The smoke command exercises implemented registry
+entries only.
 
 Precompute the fit budget as targets × surfaces × feature sets × outer folds
 × configurations, plus refits/stopping fits. Start with one fit worker and one
