@@ -4,12 +4,12 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pavement-analytics"
-version = "0.5.6"
+version = "0.5.7"
 description = "Generic tools for PCI, deduct values, and PAVER exports"
 requires-python = ">=3.11"
 dependencies = [
   "numpy>=2.0,<3", "pandas>=2.2,<3", "scipy>=1.14,<2",
-  "scikit-learn>=1.5,<2", "openpyxl>=3.1.5,<4", "packaging>=24,<27"
+  "scikit-learn>=1.5,<2", "openpyxl>=3.1.5,<4", "packaging>=24,<27", "threadpoolctl>=3.2,<4"
 ]
 
 [project.optional-dependencies]

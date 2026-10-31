@@ -18,7 +18,7 @@ from packaging.version import InvalidVersion, Version
 from .security import SafeError
 
 
-REGISTRY_VERSION = 6
+REGISTRY_VERSION = 7
 XGBOOST_MIN_VERSION, XGBOOST_MAX_VERSION = "3.1.3", "3.2"
 LIGHTGBM_MIN_VERSION, LIGHTGBM_MAX_VERSION = "4.6.0", "4.7"
 BASELINE_ID = "median"
@@ -266,7 +266,7 @@ def build_candidates(seed=42, requested=None, *, specs=None):
 
 def environment_versions():
     versions = {}
-    for package in ("numpy", "pandas", "scikit-learn", "scipy", "joblib", "openpyxl", "packaging", "xgboost", "lightgbm"):
+    for package in ("numpy", "pandas", "scikit-learn", "scipy", "joblib", "openpyxl", "packaging", "threadpoolctl", "xgboost", "lightgbm"):
         try:
             versions[package] = importlib.metadata.version(package)
         except importlib.metadata.PackageNotFoundError:

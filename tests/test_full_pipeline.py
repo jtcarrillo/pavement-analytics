@@ -200,6 +200,18 @@ class FullPipelineTests(unittest.TestCase):
             config = prepare_full(boundary, self.raw, **options)
         return config, json.loads((self.work / "full_setup_report.json").read_text())
 
+    def test_local_model_options_resolve_and_invalidate_the_original_fingerprint(self):
+        self.settings["local_model_options"] = {"cache_dir": "model-cache", "candidate_ids": ["enet_0.01"],
+                                               "fit_timeout_seconds": 123.}
+        cfg, _ = self.prepare_setup()
+        self.assertEqual(cfg["local_model_options"]["cache_dir"], str(self.root/"model-cache"))
+        self.assertTrue(cfg["local_model_options"]["comparisons"])
+        from pavement_analytics.original.pipeline import discover
+        first = discover(cfg)[3]
+        changed = json.loads(json.dumps(cfg))
+        changed["local_model_options"]["fit_timeout_seconds"] = 124.
+        self.assertNotEqual(first, discover(changed)[3])
+
     def test_inherited_git_cache_uses_external_fallback_without_moving_old_files(self):
         for marker in ("directory", "worktree_file"):
             with self.subTest(marker=marker):

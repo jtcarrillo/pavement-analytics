@@ -42,6 +42,9 @@ src/pavement_analytics/io.py
 src/pavement_analytics/metrics.py
 src/pavement_analytics/modeling.py
 src/pavement_analytics/model_registry.py
+src/pavement_analytics/model_runtime.py
+src/pavement_analytics/model_tasks.py
+src/pavement_analytics/model_comparison.py
 src/pavement_analytics/observations.py
 src/pavement_analytics/original/__init__.py
 src/pavement_analytics/original/common.py
@@ -109,6 +112,7 @@ tests/test_xgboost.py
 tests/test_lightgbm.py
 tests/test_spline_model.py
 tests/test_two_stage.py
+tests/test_model_comparison.py
 tools/check_public_tree.py
 tools/install_hooks.py
 tools/make_synthetic_example.py

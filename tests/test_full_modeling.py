@@ -124,7 +124,8 @@ class FullModelTests(unittest.TestCase):
             event = {"event": "target", "material": "PCC", "target": summary["original_target"]}
             expected.extend([{**event, "status": "started"},
                              {**event, "status": "completed", "result_status": summary["status"]}])
-        self.assertEqual(events, expected)
+        self.assertEqual([e for e in events if e["event"] == "target"], expected)
+        self.assertTrue(any(e["event"] == "model" and e["status"] == "task_reused" for e in events))
         statuses = {summary["original_target"]: summary["status"] for summary in observed}
         self.assertEqual(statuses[extra_targets[0]], "no_valid_target")
         self.assertEqual(statuses[extra_targets[1]], "constant_target")
@@ -205,7 +206,8 @@ class FullModelTests(unittest.TestCase):
 
         run.stage("10_report", report_stage)
         recorded = {Path(item["path"]).name for item in run.data["stages"]["10_report"]["artifacts"]}
-        for name in ("two_stage_predictions.csv", "two_stage_metrics.csv"):
+        for name in ("two_stage_predictions.csv", "two_stage_metrics.csv", "candidate_comparisons.csv",
+                     "family_summary.csv", "family_importance.csv", "candidate_predictions.csv", "model_runtime.csv"):
             self.assertIn(name, recorded)
             path = report_out/name
             original = path.read_bytes()
@@ -214,6 +216,32 @@ class FullModelTests(unittest.TestCase):
                 Run(checkpoint, "generated-fingerprint", self.cfg, [], resume=True)
             path.write_bytes(original)
         Run(checkpoint, "generated-fingerprint", self.cfg, [], resume=True)
+
+
+    def test_interrupted_sweep_reuses_only_verified_completed_targets(self):
+        self.cfg["local_model_options"] = {"isolated": False, "candidate_ids": ["enet_0.01"]}
+        def interrupt(event):
+            if event["event"] == "target" and event["status"] == "completed":
+                raise KeyboardInterrupt
+        with self.assertRaises(KeyboardInterrupt):
+            run_full_models(self.pipeline, self.report, self.cfg, progress=interrupt)
+        cache = self.pipeline/"09_model_tasks"
+        self.assertEqual(len(list(cache.glob("*/task_manifest.json"))), 1)
+        self.assertFalse((self.pipeline/"09_local_models").exists())
+        with patch("pavement_analytics.full_modeling.search_levels", wraps=search_levels) as fitting:
+            summaries, _, artifacts = run_full_models(self.pipeline, self.report, self.cfg)
+        self.assertEqual(fitting.call_count, 1)
+        self.assertEqual(len(summaries), 2)
+        self.assertTrue(all(path.is_file() for path in artifacts))
+        self.assertEqual(len(list(cache.glob("*/task_manifest.json"))), 2)
+
+    def test_fit_budget_is_saved_and_rejected_before_search(self):
+        self.cfg["local_model_options"] = {"max_fit_calls": 1}
+        with patch("pavement_analytics.full_modeling.search_levels") as fitting:
+            with self.assertRaisesRegex(SafeError, "LOCAL_MODEL_FIT_BUDGET_EXCEEDED"):
+                run_full_models(self.pipeline, self.report, self.cfg)
+        fitting.assert_not_called()
+        self.assertGreater(json.loads((self.pipeline/"model_fit_budget.json").read_text())["fit_calls_upper_bound"], 1)
 
 
 class IntervalWeightTests(unittest.TestCase):

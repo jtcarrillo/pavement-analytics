@@ -145,6 +145,11 @@ def prepare_full(boundary: Boundary, data: Path, config_path: Path | None = None
         raise SafeError("ORIGINAL_PIPELINE_USES_ZERO_BLANK_DISTRESS_POLICY")
     cfg = copy.deepcopy(DEFAULTS)
     cfg.update({k: v for k, v in source_options.items() if k in DEFAULTS})
+    from .model_runtime import model_options
+    cfg["local_model_options"] = model_options(cfg.get("local_model_options"))
+    if cfg["local_model_options"]["cache_dir"]:
+        value = Path(cfg["local_model_options"]["cache_dir"]).expanduser()
+        cfg["local_model_options"]["cache_dir"] = str(external_path(value if value.is_absolute() else base/value, boundary.public))
     for key in PATH_KEYS:
         # Cache precedence and legacy-path fallback are handled separately.
         if key == "cache_dir":

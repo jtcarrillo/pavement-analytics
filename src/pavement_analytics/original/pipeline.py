@@ -36,6 +36,7 @@ DEFAULTS = {
     "datarobot": "off", "targets": {}, "dr_mode": "quick", "dr_cv_reps": 5,
     "dr_holdout_pct": 20, "dr_name_prefix": "paver", "feature_impact": False,
     "retired_backend_request": None,
+    "local_model_options": {},
 }
 PATH_KEYS = ("input_dir", "output_dir", "mapping", "csv_dir", "cache_dir", "deduct_curves", "families", "cdv_curves")
 RAW_DISTRESS = re.compile(r"^\d{2}[LMH]? (deduct|\((Slabs|SqFt|Ft|Count)\))$")
@@ -104,6 +105,9 @@ def parse_config(argv=None):
                 path = Path(raw[key]).expanduser()
                 raw[key] = str((config_path.resolve().parent / path).resolve())
         cfg.update(raw)
+        if isinstance(cfg.get("local_model_options"), dict) and cfg["local_model_options"].get("cache_dir"):
+            cfg["local_model_options"] = dict(cfg["local_model_options"])
+            cfg["local_model_options"]["cache_dir"] = str((config_path.resolve().parent / Path(cfg["local_model_options"]["cache_dir"]).expanduser()).resolve())
     cfg.update({k: v for k, v in args.items() if v is not None})
     for key in PATH_KEYS:
         if cfg[key]:
@@ -119,6 +123,10 @@ def parse_config(argv=None):
 
 
 def validate_config(c):
+    from ..model_runtime import model_options
+    c["local_model_options"] = model_options(c.get("local_model_options"))
+    if c["local_model_options"]["cache_dir"]:
+        check_cli_paths(outputs=[c["local_model_options"]["cache_dir"]])
     check_cli_paths(inputs=[c.get(key) for key in ("input_dir", "mapping", "csv_dir", "deduct_curves", "families", "cdv_curves")],
                     outputs=[c.get("output_dir"), c.get("cache_dir")])
     for key, default in DEFAULTS.items():

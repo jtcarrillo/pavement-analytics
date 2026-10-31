@@ -1,7 +1,7 @@
 # Pavement Analytics
 
 Generic Python tools for Pavement Condition Index (PCI), deduct values, and PAVER
-inspection exports. Version 0.5.6 provides a runnable curation and analysis
+inspection exports. Version 0.5.7 provides a runnable curation and analysis
 foundation. All operational inputs, configuration, provenance, fitted models,
 and results belong in a separate private workspace.
 
@@ -28,6 +28,10 @@ and results belong in a separate private workspace.
   curves, categorical terms and separate missing indicators in the base install.
 - Four occurrence/severity settings combine weighted logistic probabilities
   with positive-only ExtraTrees means, with separate component diagnostics.
+- Full/study runs save every completed candidate, compare independent family
+  selections and explain predictors, climate blocks and correlated blocks.
+- Model fit budgets, candidate/fold progress, process deadlines and verified
+  completed-target checkpoints support bounded, interruptible model sweeps.
 - Immutable run outputs, file hashes and verified resume.
 - An SSH adapter that fetches an exact private data commit into an external workspace.
 - Publication checks for allowed files, Git history and private denylist matches.
@@ -111,6 +115,17 @@ Their point prediction is probability times expected positive magnitude, an
 overall conditional mean. MAE still selects the primary model; a zero median
 can win on zero-heavy targets. Private component CSVs and a separately saved
 within-family diagnostic model retain probability, severity and RMSE evidence.
+
+`full` and `study` enable family comparisons automatically. Each completed
+candidate has a development-fitted artifact and holdout predictions; each family
+has independent all-features/nonclimate CV choices and weighted permutation
+explanations. Two-stage explanations also separate occurrence and positive
+severity. Private CSVs and the offline dashboard consolidate these results.
+Primary selection remains mean development-CV MAE. A single spawned worker
+limits native threads and enforces 300-second fit/prediction deadlines.
+Ctrl+C stops the active worker and preserves completed target checkpoints;
+the existing `full --resume` workflow reuses only verified complete tasks.
+See [model runtime and resume controls](docs/full-pipeline.md#model-runtime-and-task-checkpoints).
 
 The full pipeline retains the original inspection intervals and climate definitions, including
 PG, cooling, rainflow and construction-aging calculations. The final offline

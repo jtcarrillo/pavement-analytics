@@ -13,11 +13,13 @@ from .autorun import external_path, prepare
 from .io import load_sources, read_json, sha256, write_json
 from .pipeline import checksum_outputs, code_digest, environment_versions
 from .security import Boundary, SafeError, disjoint, refuse_public_execution, reject_links
+from .model_runtime import model_options, fit_budget, check_budget
+from .model_tasks import task_key, verified_task
 
 
 KEYS = {"columns", "features", "deduct_families", "date_format", "cutoff_year",
-        "folds", "seed", "holdout_fraction", "blank_deducts", "climate", "models"}
-SETUP_KEYS = KEYS - {"climate", "features"}
+        "folds", "seed", "holdout_fraction", "blank_deducts", "climate", "models", "local_model_options"}
+SETUP_KEYS = KEYS - {"climate", "features", "local_model_options"}
 
 
 def resolve_options(data: Path, public: Path, explicit: Path | None = None) -> tuple[dict, Path | None]:
@@ -36,6 +38,10 @@ def resolve_options(data: Path, public: Path, explicit: Path | None = None) -> t
     if not isinstance(climate, dict):
         raise SafeError("INVALID_CLIMATE_CONFIGURATION")
     base = external_path(profile, public).parent if profile else folder
+    options["local_model_options"] = model_options(options.get("local_model_options"))
+    if options["local_model_options"]["cache_dir"]:
+        value = Path(options["local_model_options"]["cache_dir"]).expanduser()
+        options["local_model_options"]["cache_dir"] = str(external_path(value if value.is_absolute() else base/value, public))
     for key in ("mapping", "csv_dir", "cache_dir"):
         if key in climate and climate[key] is None:
             del climate[key]
@@ -202,6 +208,14 @@ def study(boundary: Boundary, data: Path, options_path: Path | None = None, *,
              "analysis_note": "Retrospective prediction of observed deduct levels from historical climate and reviewed covariates; not causal or a prospective forecast."}
     write_json(out / "study_audit.json", audit)
     summaries = []
+    local_options = model_options(options.get("local_model_options"))
+    budget = fit_budget(folds, local_options)
+    task_count = model_data.material.nunique()*len(targets) if options.get("models", True) else 0
+    sweep_budget = {"tasks": task_count, "per_task_upper_bound": budget,
+                    "fit_calls_upper_bound": budget["fit_calls_upper_bound"]*task_count,
+                    "native_fits_upper_bound": budget["native_fits_upper_bound"]*task_count}
+    write_json(out/"model_fit_budget.json", sweep_budget)
+    check_budget(sweep_budget, local_options)
     write_json(out / "study_status.json", {"status": "running", "stage": "target_sweep"})
     for material, subset in model_data.groupby("material", sort=True):
         numeric = subset[features].select_dtypes(include=[np.number])
@@ -210,8 +224,12 @@ def study(boundary: Boundary, data: Path, options_path: Path | None = None, *,
         numeric.corr(method="spearman").to_csv(material_dir / "feature_correlations.csv")
         for target in targets:
             if options.get("models", True):
-                summary = search_levels(subset, features, target, material_dir / target,
-                                        partitions=partitions, climate_features=climate_features, seed=seed)
+                def build_task(destination):
+                    return search_levels(subset, features, target, destination, partitions=partitions,
+                        climate_features=climate_features, seed=seed, model_options=local_options)
+                key = task_key(subset, partitions, features, climate_features, target, seed, None, local_options)
+                cache = Path(local_options["cache_dir"]) if local_options["cache_dir"] else boundary.output("model_tasks")
+                summary = verified_task(cache, key, build_task, material_dir/target)
             else:
                 summary = {"target": target, "status": "modeling_disabled",
                            "valid_target_rows": int(np.isfinite(subset[target]).sum()),

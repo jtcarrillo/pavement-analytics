@@ -281,6 +281,11 @@ constitute standards certification or validation on operational data.
 
 ## Local models and interpretation
 
+Observed-level `full` and `study` searches enable the R7 comparison/runtime path
+automatically. Primary CV-MAE selection and all original preparation stages
+are preserved. The library call to `search_levels` without `model_options`
+retains its established in-process execution path.
+
 Each material/family task compares a weighted median baseline, two ElasticNet
 settings, two random-forest settings and four ExtraTrees settings. ExtraTrees
 uses 200 trees, leaf sizes 2/10, maximum depth 12/unlimited and one worker.
@@ -376,8 +381,8 @@ errors without positive evaluation rows are undefined with explicit statuses.
 Mean RMSE skill uses each fitting partition's weighted overall mean baseline;
 Brier uses its weighted prevalence. These pooled metrics differ from the
 mean-fold MAE used for selection. The dashboard and consolidated CSVs include
-the diagnostics. They do not add per-family feature importance yet; comprehensive
-family comparisons and explanations remain R7. The four candidates add 40 CV
+the diagnostics. R7 adds family and component explanations as described below.
+The four candidates add 40 CV
 fits per five-fold target, each containing up to two native fits, plus refits.
 
 Imputation, numeric scaling and
@@ -435,3 +440,90 @@ Use `full_result.json` for the dashboard location after success. Review
 setup explicitly. Live CDS access still requires acceptance testing on the
 deployment workstation; automated tests substitute generated weather and never
 download private-location climate data or contact a training service.
+
+## Model runtime and task checkpoints
+
+The default model path uses one spawned process and one native estimator thread.
+It runs candidate/fold work sequentially, records wall time and worker CPU time,
+and enforces a 300-second deadline for each fit or prediction operation. A timed
+out worker is terminated, its candidate receives an explicit status, and the
+next eligible model can run in a fresh worker. Native diagnostics stay in the
+private task's `model_worker.log`; progress shows fixed model IDs, feature sets,
+folds and fit-call counts. File/output failures abort the task.
+
+A private full-pipeline JSON profile, or study options profile, accepts:
+
+```json
+{
+  "local_model_options": {
+    "comparisons": true,
+    "isolated": true,
+    "fit_timeout_seconds": 300,
+    "prediction_timeout_seconds": 300,
+    "max_fit_calls": null,
+    "candidate_ids": null,
+    "cache_dir": null
+  }
+}
+```
+
+Merge this object into the existing profile. `candidate_ids` can be a list of
+implemented, available registry IDs, while the median baseline is retained.
+`max_fit_calls` rejects a sweep whose conservative fit-call upper bound exceeds
+the supplied positive integer. The pre-fit `model_fit_budget.json` includes
+target counts, outer fits, worst-case selection/refit fallbacks and native
+stopping/two-stage fits. It is an upper bound, not a claim every fit ran.
+The per-task `fit_budget.json` and `model_runtime.csv` retain planned and actual
+work. Wall timing includes transfer/startup overhead; worker CPU timing covers
+the native operation. Refits reused from primary/R6 diagnostics are labeled
+with their source and original fit cost. Explicit `isolated: false` is a debug
+mode and disables hard process deadlines/native thread enforcement.
+
+Every complete CV candidate is refitted on development data, serialized into
+`candidate_models/<feature_set>__<candidate>.joblib`, reloaded, and checked
+against its saved holdout predictions. Model paths in CSVs are relative to the
+material/target task directory. Existing primary model and prediction files
+remain available. For each family, all-features and nonclimate representatives
+are chosen independently by development CV MAE; holdout outcomes do not choose
+representatives. Failed refits, unavailable backends, partial CV and constant
+shortcuts retain explicit statuses. Importance failures have separate statuses.
+
+Family importance uses the saved fitted pipeline and unchanged holdout weights.
+Five repeated joint permutations cover individual predictors, the whole climate
+block, and connected training-only numeric Spearman blocks at absolute
+correlation at least 0.8. The CSV records each block's member columns. Two-stage
+models additionally measure occurrence Brier loss and positive-only severity
+MAE. Support/improvement flags are heuristics for exploratory predictive reliance;
+repeat SD is permutation variability, not a confidence interval. Correlated
+predictors can share importance, and none of these comparisons establish climate
+causation. The all/nonclimate comparison includes independent model selection.
+
+| Private output | Contents |
+|---|---|
+| `candidate_comparisons.csv` | Every CV attempt, final status, parameters, time, support, scores and model path |
+| `candidate_predictions.csv` | Holdout predictions and original weights for every completed candidate |
+| `family_summary.csv` | Development-selected representatives, holdout skill, climate ablation and explanation status |
+| `family_importance.csv` | Family and component predictor/block reliance, repeat SD and support flags |
+| `model_runtime.csv` | Candidate/fold/operation statuses and timings |
+
+Each output exists per task and is consolidated into the final report. Old
+reports without these sidecars remain readable. The dashboard has family
+comparison tables and separate predictor/component rankings; complete CSVs
+retain the rows omitted by the compact display.
+
+Ctrl+C stops the active worker. Only complete targets are reusable; partial
+CV/fits are retained privately for diagnosis and are rerun. Full runs keep
+content-keyed tasks under `pipeline/09_model_tasks`, independent of the
+`09_local_models` stage's atomic publication. Use the existing workspace with
+`pavement --workspace "/path/to/run" full --resume --open` to resume. Earlier
+original-stage input/config/code/dependency guards still apply.
+
+An explicit model `cache_dir` is resolved relative to its private profile and
+must be outside version control and the public source tree. Study runs can
+reuse this cache across new workspaces. Task keys include data/order/dtypes,
+shared plans, features, target, weights, seed, candidate definitions, options,
+registry/code hashes, Python/platform and dependency versions. Every artifact's
+checksum and the exact output set are verified before reuse/copy. Changed or
+missing artifacts reject reuse; changing inputs/settings creates a new key.
+One foreground writer per workspace/cache is supported. No concurrent fitting
+mode is enabled by default.

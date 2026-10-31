@@ -18,6 +18,8 @@ from .io import read_json, write_json
 from .security import Boundary, SafeError, disjoint, reject_links, source_root
 from .study_modeling import search_levels
 from .study_reporting import build_study_report
+from .model_runtime import model_options, fit_budget, check_budget
+from .model_tasks import task_key, verified_task
 
 
 def _read(path: Path) -> pd.DataFrame:
@@ -118,6 +120,7 @@ def run_full_models(pipeline_out: Path, pipeline_report: dict, cfg: dict,
             or any(s not in {"PCC", "APC", "AC_AAC_ACC"} for s in surfaces)):
         raise SafeError("FULL_MODEL_SURFACES_INVALID")
     prepared, target_map, rows, next_row = [], [], [], 0
+    options = model_options(cfg.get("local_model_options"))
     all_features, all_climate = set(), set()
     for surface in surfaces:
         folder = pipeline_out / "07_modeling" / "partitioned"
@@ -163,8 +166,15 @@ def run_full_models(pipeline_out: Path, pipeline_report: dict, cfg: dict,
         prepared.append((surface, table, features, climate, aliases))
         all_features.update(features)
         all_climate.update(climate)
+    task_budget = fit_budget(int(plan.planned_folds.iloc[0]), options)
+    budget = {"tasks": len(target_map), "per_task_upper_bound": task_budget,
+              "fit_calls_upper_bound": task_budget["fit_calls_upper_bound"]*len(target_map),
+              "native_fits_upper_bound": task_budget["native_fits_upper_bound"]*len(target_map)}
+    write_json(pipeline_out/"model_fit_budget.json", budget)
+    check_budget(budget, options)
     staging = Path(tempfile.mkdtemp(prefix=".full-models-", dir=out.parent))
     try:
+        write_json(staging/"model_fit_budget.json", budget)
         plan.to_csv(staging / "partitions.csv", index=False)
         pd.DataFrame(target_map, columns=["material", "target", "original_target"]).to_csv(staging / "target_map.csv", index=False)
         pd.DataFrame(rows, columns=["row_id", "material", "model_csv_row", "curated_row"]).to_csv(staging / "row_map.csv", index=False)
@@ -181,11 +191,20 @@ def run_full_models(pipeline_out: Path, pipeline_report: dict, cfg: dict,
                               "target": original_target, "status": "started"})
                 task_dir = material_dir / alias
                 if features:
-                    summary = search_levels(table, features, alias, task_dir, partitions=plan,
-                                            climate_features=climate, seed=cfg.get("seed", 42),
-                                            weight_column="delta_days")
-                    summary["original_target"] = original_target
-                    write_json(task_dir / "summary.json", summary)
+                    def model_progress(event):
+                        if progress is not None:
+                            progress({**event, "material": surface, "target": original_target})
+                    def build_task(destination):
+                        result = search_levels(table, features, alias, destination, partitions=plan,
+                            climate_features=climate, seed=cfg.get("seed", 42), weight_column="delta_days",
+                            model_options=options, progress=model_progress)
+                        result["original_target"] = original_target
+                        write_json(destination/"summary.json", result)
+                        return result
+                    key = task_key(table, plan, features, climate, alias, cfg.get("seed", 42), "delta_days", options,
+                                   extra={"original_target": original_target})
+                    cache = Path(options["cache_dir"]) if options["cache_dir"] else pipeline_out/"09_model_tasks"
+                    summary = verified_task(cache, key, build_task, task_dir, model_progress)
                 else:
                     summary = _slot_without_features(table, alias, original_target)
                     task_dir.mkdir()
@@ -244,4 +263,5 @@ def consolidate_full_models(out: Path, summaries: list[dict] | None = None,
     build_study_report(report_out, summaries, audit, model_root=out)
     return [report_out / "report_audit.json", *[report_out / name for name in (
         "dashboard.html", "target_summary.csv", "feature_importance.csv", "model_leaderboard.csv", "predictions.csv",
-        "two_stage_predictions.csv", "two_stage_metrics.csv")]]
+        "two_stage_predictions.csv", "two_stage_metrics.csv", "candidate_comparisons.csv", "family_summary.csv",
+        "candidate_predictions.csv", "family_importance.csv", "model_runtime.csv")]]

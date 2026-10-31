@@ -255,3 +255,21 @@ The dashboard makes no network requests. Only the ERA5 acquisition stage uses
 CDS; it sends location coordinates, dates and weather-variable requests, never
 inspection records or deduct values. Detailed failures remain in
 `logs/runtime.log`. Keep the entire run, mapping, cache and credentials private.
+
+## Family comparisons and model runtime
+
+Observed-level study runs enable the same candidate serialization, independent
+family selections, predictor/climate/correlated-block permutations, two-stage
+component explanations, fit budgets and process deadlines as `full`. The
+original group-balanced weights and shared holdout plan remain unchanged.
+The new `candidate_comparisons.csv`, `candidate_predictions.csv`,
+`family_summary.csv`, `family_importance.csv` and `model_runtime.csv` files are
+consolidated and available from the offline dashboard. Primary model files and
+CV-MAE selection retain their existing meaning.
+
+The private study profile accepts `local_model_options`; see
+[the full model runtime guide](full-pipeline.md#model-runtime-and-task-checkpoints)
+for its keys and defaults. A configured external model `cache_dir` allows a
+new study workspace to reuse exactly matching, verified complete target tasks.
+A cancelled partial target is rerun; existing completed tasks stay intact.
+This does not add a resume path for the study's earlier preprocessing stages.

@@ -26,6 +26,7 @@ from .io import write_json
 from .model_registry import (REGISTRY_VERSION, build_candidates, candidate_catalog,
                              environment_versions, metadata_for)
 from .security import SafeError
+from .model_runtime import ACTIVE, ModelRuntime, ModelTimeout, model_options as normalize_model_options, fit_budget, runtime_context
 from .two_stage import (STAGE_PREDICTION_COLUMNS, STAGE_METRIC_COLUMNS,
                         checked_components, distribution_metrics)
 
@@ -192,6 +193,8 @@ def _score(y, prediction, weights) -> dict:
 
 
 def _fit(estimator, X, y, weights, groups=None):
+    if ACTIVE.get() is not None:
+        return ACTIVE.get().call("fit", estimator, X, y, weights, groups)
     # A constant training fold has no learnable relation. This also avoids
     # meaningless coordinate-descent convergence warnings on a zero target.
     if np.ptp(y) == 0 and not getattr(estimator, "handles_constant_targets", False):
@@ -225,6 +228,8 @@ LEADERBOARD_COLUMNS = ["candidate", "feature_set", "cv_mae", "cv_mae_std", "cv_r
 
 
 def _write_empty(out, summary):
+    from .model_comparison import empty_comparisons
+    empty_comparisons(out)
     for name, columns in [("importance.csv", IMPORTANCE_COLUMNS),
                           ("holdout_predictions.csv", PREDICTION_COLUMNS),
                           ("fold_scores.csv", FOLD_COLUMNS),
@@ -247,6 +252,9 @@ def _checked_prediction(estimator, X):
 
 
 def _candidate_failure(out, attempt, status, code):
+    import sys
+    if isinstance(sys.exc_info()[1], ModelTimeout):
+        status, code = status.replace("failed_", "timed_out_", 1), "MODEL_OPERATION_TIMED_OUT"
     attempt.update(candidate_status=status, error_code=code, selected=False)
     with (out / "candidate_errors.log").open("a", encoding="utf-8") as stream:
         stream.write(f"{attempt['candidate']} / {attempt['feature_set']} / {code}\n")
@@ -254,6 +262,8 @@ def _candidate_failure(out, attempt, status, code):
 
 
 def _prediction_bundle(estimator, X):
+    if ACTIVE.get() is not None:
+        return ACTIVE.get().call("predict", estimator, X)
     prediction = _checked_prediction(estimator, X)
     method = getattr(estimator, "predict_occurrence_severity", None)
     components = checked_components(method(X), len(X)) if callable(method) else None
@@ -322,6 +332,7 @@ def _evaluate_candidates(development, heldout, columns, target, feature_set,
             attempt = attempts[name]
             if attempt["candidate_status"] != "ready":
                 continue
+            runtime_context(candidate=name, family=attempt["family"], feature_set=feature_set, phase="cv", fold=fold)
             try:
                 fitted = _fit(estimator, development.loc[train, columns], y[train], train_weights,
                               development.loc[train, "group_id"])
@@ -376,6 +387,7 @@ def _evaluate_candidates(development, heldout, columns, target, feature_set,
     primary = None
     for best in eligible:
         name = best["candidate"]
+        runtime_context(candidate=name, family=best["family"], feature_set=feature_set, phase="primary_refit", fold=-1)
         try:
             fitted = _fit(estimators[name], development[columns], y, _weights(development, weight_column),
                           development.group_id)
@@ -387,7 +399,7 @@ def _evaluate_candidates(development, heldout, columns, target, feature_set,
             if name == "median":
                 raise
             _candidate_failure(out, attempts[name], "failed_refit", "CANDIDATE_REFIT_FAILED")
-            best.update(candidate_status="failed_refit", error_code="CANDIDATE_REFIT_FAILED")
+            best.update(candidate_status=attempts[name]["candidate_status"], error_code=attempts[name]["error_code"])
             continue
         try:
             predicted, components = _prediction_bundle(fitted, heldout[columns])
@@ -395,7 +407,7 @@ def _evaluate_candidates(development, heldout, columns, target, feature_set,
             if name == "median":
                 raise
             _candidate_failure(out, attempts[name], "failed_refit_predict", "CANDIDATE_REFIT_PREDICTION_FAILED")
-            best.update(candidate_status="failed_refit_predict", error_code="CANDIDATE_REFIT_PREDICTION_FAILED")
+            best.update(candidate_status=attempts[name]["candidate_status"], error_code=attempts[name]["error_code"])
             continue
         best["selected"] = attempts[name]["selected"] = True
         primary = (best, fitted, predicted)
@@ -407,6 +419,7 @@ def _evaluate_candidates(development, heldout, columns, target, feature_set,
     # CV MAE, preserves component evidence even when the median wins overall.
     for diagnostic in [row for row in eligible if row["family"] == "two_stage" and row["candidate_status"] == "completed"]:
         name = diagnostic["candidate"]
+        runtime_context(candidate=name, family="two_stage", feature_set=feature_set, phase="two_stage_refit", fold=-1)
         try:
             if name == primary[0]["candidate"]:
                 diagnosed = primary[1]
@@ -419,7 +432,7 @@ def _evaluate_candidates(development, heldout, columns, target, feature_set,
             details = _training_details(diagnosed, estimators[name], development.group_id)
         except Exception:
             _candidate_failure(out, attempts[name], "failed_diagnostic_refit", "TWO_STAGE_DIAGNOSTIC_REFIT_FAILED")
-            diagnostic.update(candidate_status="failed_diagnostic_refit", error_code="TWO_STAGE_DIAGNOSTIC_REFIT_FAILED",
+            diagnostic.update(candidate_status=attempts[name]["candidate_status"], error_code=attempts[name]["error_code"],
                               two_stage_diagnostic=False)
             continue
         joblib.dump({"format_version": 1, "candidate": name, "candidate_family": "two_stage",
@@ -459,7 +472,7 @@ def _validate_plan(table, partitions):
     return plan, planned
 
 
-def search_levels(table: pd.DataFrame, features: list[str], target: str, out: Path,
+def _search_levels(table: pd.DataFrame, features: list[str], target: str, out: Path,
                   partitions: pd.DataFrame, climate_features: list[str], seed: int = 42,
                   weight_column: str | None = None, candidate_ids: list[str] | None = None) -> dict:
     """Fit one target, selecting both full and climate-ablation models by CV.
@@ -532,6 +545,8 @@ def search_levels(table: pd.DataFrame, features: list[str], target: str, out: Pa
     held_y = heldout[target].to_numpy(float)
     nonclimate = [feature for feature in features if feature not in climate_features]
     constant = np.ptp(y) == 0
+    if ACTIVE.get() is not None:
+        ACTIVE.get().budget(fit_budget(planned_folds, ACTIVE.get().options, constant=bool(constant)))
     sets = {"all": features, "nonclimate": nonclimate}
     fold_scores, leaders, fitted_sets, attempts = [], [], {}, []
     oof_rows, stage_rows = [], []
@@ -559,7 +574,7 @@ def search_levels(table: pd.DataFrame, features: list[str], target: str, out: Pa
                    candidate=best["candidate"], cv_mae=best["cv_mae"], cv_mae_std=best["cv_mae_std"],
                    candidate_family=best["family"], candidate_parameters=json.loads(best["parameters"]),
                    candidate_iterations=best.get("final_iterations"),
-                   candidate_failure_count=sum(a["candidate_status"].startswith("failed_") for a in attempts),
+                   candidate_failure_count=sum(a["candidate_status"].startswith(("failed_", "timed_out_")) for a in attempts),
                    candidate_unavailable_count=sum(a["candidate_status"] in {"unavailable", "unsupported"} for a in attempts),
                    holdout_mae=measured["mae"], holdout_rmse=measured["rmse"], holdout_r2=measured["r2"],
                    baseline_mae=baseline_mae, mae_skill=skill,
@@ -569,6 +584,7 @@ def search_levels(table: pd.DataFrame, features: list[str], target: str, out: Pa
                    constant_target_scope="development" if constant else None)
     importance = []
     if best["candidate"] != "median":
+        runtime_context(candidate=best["candidate"], family=best["family"], feature_set="all", phase="primary_importance", fold=-1)
         blocks = [(feature, "feature", [feature], feature in climate_features) for feature in features]
         if climate_features:
             blocks.append(("All climate features", "climate_block", climate_features, True))
@@ -577,11 +593,20 @@ def search_levels(table: pd.DataFrame, features: list[str], target: str, out: Pa
         orders = [rng.permutation(len(heldout)) for _ in range(5)]
         for name, kind, columns, is_climate in blocks:
             changes = []
-            for order in orders:
-                perturbed = heldout[features].copy()
-                perturbed.loc[:, columns] = heldout.iloc[order][columns].to_numpy()
-                error = _score(held_y, fitted.predict(perturbed), held_weights)["mae"]
-                changes.append(error - measured["mae"])
+            try:
+                for order in orders:
+                    perturbed = heldout[features].copy()
+                    perturbed.loc[:, columns] = heldout.iloc[order][columns].to_numpy()
+                    error = _score(held_y, _prediction_bundle(fitted, perturbed)[0], held_weights)["mae"]
+                    changes.append(error - measured["mae"])
+            except Exception as error:
+                if ACTIVE.get() is None:
+                    raise
+                summary.update(importance_reliable=False, importance_status="timed_out" if isinstance(error, ModelTimeout) else "failed")
+                with (out/"candidate_errors.log").open("a") as log:
+                    log.write("PRIMARY_IMPORTANCE_FAILED\n"+traceback.format_exc())
+                importance = []
+                break
             importance.append({"feature": name, "kind": kind, "is_climate": is_climate,
                                "importance_mean": float(np.mean(changes)),
                                "importance_std": float(np.std(changes, ddof=0)),
@@ -612,4 +637,27 @@ def search_levels(table: pd.DataFrame, features: list[str], target: str, out: Pa
                  "fit_partition": "development", "weight_column": weight_column,
                  "weighting": "equal_total_per_group" if weight_column is None else "interval_days"}, out / "model.joblib")
     write_json(out / "summary.json", summary)
+    if ACTIVE.get() is not None and ACTIVE.get().options["comparisons"]:
+        from .model_comparison import build_comparisons
+        summary.update(build_comparisons(out, development, heldout, features, climate_features, target,
+                                         seed, weight_column, candidate_ids))
+        write_json(out/"summary.json", summary)
     return summary
+
+
+def search_levels(table: pd.DataFrame, features: list[str], target: str, out: Path,
+                  partitions: pd.DataFrame, climate_features: list[str], seed: int = 42,
+                  weight_column: str | None = None, candidate_ids: list[str] | None = None,
+                  model_options: dict | None = None, progress=None) -> dict:
+    """Run one target. Full/study enable bounded R7 comparisons explicitly.
+
+    Omitting model_options preserves the established in-process library path.
+    """
+    if model_options is None and progress is None:
+        return _search_levels(table, features, target, out, partitions, climate_features, seed, weight_column, candidate_ids)
+    options = normalize_model_options(model_options)
+    if candidate_ids is not None and options["candidate_ids"] is not None and candidate_ids != options["candidate_ids"]:
+        raise SafeError("DUPLICATE_MODEL_CANDIDATE_SELECTION")
+    options["candidate_ids"] = candidate_ids if candidate_ids is not None else options["candidate_ids"]
+    with ModelRuntime(out, options, progress):
+        return _search_levels(table, features, target, out, partitions, climate_features, seed, weight_column, options["candidate_ids"])
