@@ -1,5 +1,10 @@
 # Scope and extension plan
 
+For the staged ExtraTrees, XGBoost, LightGBM, additive spline and two-stage
+model plan, see [regression model expansion](regression-model-roadmap.md). Its
+offline synthetic dataset and installed-candidate smoke runner are delivered;
+the five new model families remain planned.
+
 Version 0.4.0 adds the original preparation pipeline and a local deduct-family
 model sweep through `pavement full`. Original numerical helpers have generated
 input parity checks against the recovered implementation. Automated tests do
