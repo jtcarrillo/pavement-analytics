@@ -43,6 +43,19 @@ No GAM service, pyGAM package or native extension is added for this family.
 The four spline candidates join `full` and `study` automatically after updating
 the source. Existing resume rules require a new run for the changed code.
 
+Occurrence/severity regression also uses only the base scikit-learn dependency:
+
+```bash
+PYTHONPATH=src python -m unittest discover -s tests -p 'test_two_stage.py' -v
+```
+
+Its four settings join observed-level `full` and `study` searches automatically.
+The saved point prediction is occurrence probability times positive mean;
+component diagnostics are separate from primary MAE selection. Update the
+editable checkout, reinstall it if needed, and start a new run under the existing
+resume fingerprint rules. The ERA5 cache can still be reused. No training
+service, probability-calibration package or new native extension is added.
+
 ## Public repository
 
 Use a new dedicated code-only repository, or an existing repository only after

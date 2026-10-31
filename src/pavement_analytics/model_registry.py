@@ -18,7 +18,7 @@ from packaging.version import InvalidVersion, Version
 from .security import SafeError
 
 
-REGISTRY_VERSION = 5
+REGISTRY_VERSION = 6
 XGBOOST_MIN_VERSION, XGBOOST_MAX_VERSION = "3.1.3", "3.2"
 LIGHTGBM_MIN_VERSION, LIGHTGBM_MAX_VERSION = "4.6.0", "4.7"
 BASELINE_ID = "median"
@@ -80,6 +80,23 @@ def _lightgbm(parameters):
 def _additive_spline(parameters):
     from .spline_model import AdditiveSplineRegressor
     return AdditiveSplineRegressor(**parameters)
+
+
+def _two_stage(parameters):
+    from sklearn.linear_model import LogisticRegression
+    from .study_modeling import _estimator
+    from .two_stage import OccurrenceSeverityRegressor
+    occurrence = _estimator(LogisticRegression(C=parameters["occurrence_C"], solver=parameters["occurrence_solver"],
+                            max_iter=parameters["occurrence_max_iter"], tol=parameters["occurrence_tol"],
+                            random_state=parameters["random_state"])).estimator
+    severity = _extra_trees({"n_estimators": parameters["severity_estimators"], "criterion": parameters["severity_criterion"],
+                            "min_samples_leaf": parameters["severity_leaf"], "max_depth": parameters["severity_depth"],
+                            "max_features": parameters["severity_max_features"], "bootstrap": parameters["severity_bootstrap"],
+                            "n_jobs": parameters["n_jobs"],
+                            "random_state": parameters["random_state"]})
+    return OccurrenceSeverityRegressor(occurrence, severity,
+        min_class_rows=parameters["min_class_rows"], min_class_groups=parameters["min_class_groups"],
+        min_positive_rows=parameters["min_positive_rows"], min_positive_groups=parameters["min_positive_groups"])
 
 
 @dataclass(frozen=True)
@@ -175,6 +192,14 @@ def candidate_specs(seed: int = 42):
             "knots": "uniform", "solver": "cholesky"}, _additive_spline,
            prediction_meaning="nonnegative clipped additive Gaussian point estimate")
           for knots in (5, 8) for alpha in (0.1, 1.0)),
+        *(CandidateSpec(f"two_stage_c{c}_leaf{leaf}", "two_stage",
+           {"occurrence_C": c, "severity_leaf": leaf, "random_state": seed,
+            "occurrence_solver": "lbfgs", "occurrence_max_iter": 1000, "occurrence_tol": 0.0001,
+            "severity_estimators": 200, "severity_depth": 12, "severity_max_features": 1.0,
+            "severity_criterion": "squared_error", "severity_bootstrap": False, "n_jobs": 1,
+            "min_class_rows": 5, "min_class_groups": 2, "min_positive_rows": 10, "min_positive_groups": 2},
+           _two_stage, prediction_meaning="conditional mean: P(Y>0|X) times positive conditional mean; not a median")
+          for c in (0.1, 1.0) for leaf in (2, 10)),
     )
 
 

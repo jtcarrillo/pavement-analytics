@@ -41,7 +41,7 @@ class OptionalBoostingTests(unittest.TestCase):
         frame = frame.loc[frame.material.eq("PCC")]
         with patch("pavement_analytics.model_registry.importlib.util.find_spec", side_effect=available):
             pool = build_candidates()
-            self.assertEqual(len(pool), 12)
+            self.assertEqual(len(pool), 16)
             entries = [r for r in pool.entries if r["family"] == "xgboost"]
             self.assertEqual(len(entries), 8)
             self.assertTrue(all(r["candidate_status"] == "unavailable" for r in entries))

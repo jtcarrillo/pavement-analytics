@@ -26,6 +26,8 @@ from .io import write_json
 from .model_registry import (REGISTRY_VERSION, build_candidates, candidate_catalog,
                              environment_versions, metadata_for)
 from .security import SafeError
+from .two_stage import (STAGE_PREDICTION_COLUMNS, STAGE_METRIC_COLUMNS,
+                        checked_components, distribution_metrics)
 
 
 def group_weights(groups) -> np.ndarray:
@@ -192,7 +194,7 @@ def _score(y, prediction, weights) -> dict:
 def _fit(estimator, X, y, weights, groups=None):
     # A constant training fold has no learnable relation. This also avoids
     # meaningless coordinate-descent convergence warnings on a zero target.
-    if np.ptp(y) == 0:
+    if np.ptp(y) == 0 and not getattr(estimator, "handles_constant_targets", False):
         return MedianRegressor().fit(X, y, sample_weight=weights)
     fitted = clone(estimator)
     if callable(getattr(fitted, "fit_grouped", None)):
@@ -219,14 +221,16 @@ FOLD_COLUMNS = ["candidate", "feature_set", "fold", "mae", "rmse", "r2"]
 LEADERBOARD_COLUMNS = ["candidate", "feature_set", "cv_mae", "cv_mae_std", "cv_rmse",
                        "cv_wins_vs_baseline", "family", "candidate_status", "error_code",
                        "folds_completed", "selected", "parameters", "cv_iterations",
-                       "cv_training", "final_iterations", "final_training"]
+                       "cv_training", "final_iterations", "final_training", "two_stage_diagnostic", "diagnostic_training"]
 
 
 def _write_empty(out, summary):
     for name, columns in [("importance.csv", IMPORTANCE_COLUMNS),
                           ("holdout_predictions.csv", PREDICTION_COLUMNS),
                           ("fold_scores.csv", FOLD_COLUMNS),
-                          ("leaderboard.csv", LEADERBOARD_COLUMNS)]:
+                          ("leaderboard.csv", LEADERBOARD_COLUMNS),
+                          ("two_stage_predictions.csv", STAGE_PREDICTION_COLUMNS),
+                          ("two_stage_metrics.csv", STAGE_METRIC_COLUMNS)]:
         pd.DataFrame(columns=columns).to_csv(out / name, index=False)
     write_json(out / "candidate_audit.json", {"registry_version": REGISTRY_VERSION,
                "task_status": summary["status"], "attempts": [],
@@ -247,6 +251,44 @@ def _candidate_failure(out, attempt, status, code):
     with (out / "candidate_errors.log").open("a", encoding="utf-8") as stream:
         stream.write(f"{attempt['candidate']} / {attempt['feature_set']} / {code}\n")
         stream.write(traceback.format_exc() + "\n")
+
+
+def _prediction_bundle(estimator, X):
+    prediction = _checked_prediction(estimator, X)
+    method = getattr(estimator, "predict_occurrence_severity", None)
+    components = checked_components(method(X), len(X)) if callable(method) else None
+    if components is not None and not np.allclose(prediction, components["prediction"], rtol=1e-12, atol=1e-12):
+        raise SafeError("INCONSISTENT_TWO_STAGE_POINT_PREDICTION")
+    return prediction, components
+
+
+def _component_rows(estimator, components, table, target, weights, candidate, feature_set, partition, fold):
+    if components is None:
+        return []
+    rows = table[["row_id", "group_id", target]].rename(columns={target: "actual"}).copy()
+    rows["candidate"], rows["feature_set"], rows["partition"], rows["fold"] = candidate, feature_set, partition, fold
+    for key, values in components.items():
+        rows[key] = values
+    rows["weight"] = weights
+    details = getattr(estimator, "training_details_", {})
+    rows["occurrence_status"] = details.get("occurrence_status", "custom")
+    rows["severity_status"] = details.get("severity_status", "custom")
+    return rows.to_dict("records")
+
+
+def _write_stage_metrics(out, stage_rows, attempts, planned_folds):
+    predictions = pd.DataFrame(stage_rows, columns=STAGE_PREDICTION_COLUMNS)
+    predictions.to_csv(out/"two_stage_predictions.csv", index=False)
+    lookup = {(r["candidate"], r["feature_set"]): r for r in attempts}
+    rows = []
+    for (candidate, feature_set, partition), frame in predictions.groupby(["candidate", "feature_set", "partition"], sort=True):
+        attempt = lookup[(candidate, feature_set)]
+        rows.append({"candidate": candidate, "feature_set": feature_set, "partition": partition,
+                     "candidate_status": attempt["candidate_status"],
+                     "complete_cv": attempt["folds_completed"] == planned_folds,
+                     "diagnostic_selection": "mean_development_cv_MAE" if partition == "holdout" else "all_attempted_folds",
+                     **distribution_metrics(frame)})
+    pd.DataFrame(rows, columns=STAGE_METRIC_COLUMNS).to_csv(out/"two_stage_metrics.csv", index=False)
 
 
 def _evaluate_candidates(development, heldout, columns, target, feature_set,
@@ -271,7 +313,7 @@ def _evaluate_candidates(development, heldout, columns, target, feature_set,
     for name, diagnostic in diagnostics.items():
         with (out / "candidate_errors.log").open("a", encoding="utf-8") as stream:
             stream.write(f"{name} / {feature_set} / MODEL_CONSTRUCTION_FAILED\n{diagnostic}\n")
-    results, oof_rows = [], []
+    results, oof_rows, stage_rows = [], [], []
     for fold in range(planned_folds):
         train = development.fold.ne(fold).to_numpy()
         test = ~train
@@ -292,7 +334,9 @@ def _evaluate_candidates(development, heldout, columns, target, feature_set,
                 _candidate_failure(out, attempt, "failed_fit", "CANDIDATE_FIT_FAILED")
                 continue
             try:
-                prediction = _checked_prediction(fitted, development.loc[test, columns])
+                prediction, components = _prediction_bundle(fitted, development.loc[test, columns])
+                component_rows = _component_rows(fitted, components, development.loc[test], target, test_weights,
+                                                 name, feature_set, "development_oof", fold)
             except Exception:
                 if name == "median":
                     raise
@@ -301,6 +345,7 @@ def _evaluate_candidates(development, heldout, columns, target, feature_set,
             results.append({"candidate": name, "feature_set": feature_set, "fold": fold,
                             **_score(y[test], prediction, test_weights)})
             attempt["folds_completed"] += 1
+            stage_rows.extend(component_rows)
             identities = development.loc[test, ["row_id", "group_id", target]].itertuples(index=False, name=None)
             oof_rows.extend({"row_id": row_id, "group_id": group_id, "candidate": name,
                              "feature_set": feature_set, "fold": fold, "actual": float(actual),
@@ -315,7 +360,7 @@ def _evaluate_candidates(development, heldout, columns, target, feature_set,
                "parameters": json.dumps(attempt["parameters"], sort_keys=True), "folds_completed": attempt["folds_completed"],
                "cv_iterations": json.dumps([fit["iterations"] for fit in attempt["cv_training"]]),
                "cv_training": json.dumps(attempt["cv_training"], sort_keys=True),
-               "final_iterations": None, "final_training": None}
+               "final_iterations": None, "final_training": None, "two_stage_diagnostic": False, "diagnostic_training": None}
         if attempt["candidate_status"] == "ready" and attempt["folds_completed"] == planned_folds:
             attempt["candidate_status"] = "completed"
             block = scores.loc[scores.candidate.eq(name)].sort_values("fold")
@@ -328,6 +373,7 @@ def _evaluate_candidates(development, heldout, columns, target, feature_set,
     # baseline wins ties, as it did before the registry refactor.
     eligible = sorted([row for row in leaders if row["candidate_status"] == "completed"],
                       key=lambda row: (row["cv_mae"], row["candidate"] != "median", row["candidate"]))
+    primary = None
     for best in eligible:
         name = best["candidate"]
         try:
@@ -344,7 +390,7 @@ def _evaluate_candidates(development, heldout, columns, target, feature_set,
             best.update(candidate_status="failed_refit", error_code="CANDIDATE_REFIT_FAILED")
             continue
         try:
-            predicted = _checked_prediction(fitted, heldout[columns])
+            predicted, components = _prediction_bundle(fitted, heldout[columns])
         except Exception:
             if name == "median":
                 raise
@@ -352,8 +398,41 @@ def _evaluate_candidates(development, heldout, columns, target, feature_set,
             best.update(candidate_status="failed_refit_predict", error_code="CANDIDATE_REFIT_PREDICTION_FAILED")
             continue
         best["selected"] = attempts[name]["selected"] = True
-        return best, fitted, predicted, results, oof_rows, leaders, list(attempts.values())
-    raise SafeError("NO_VALID_MODEL_BASELINE")
+        primary = (best, fitted, predicted)
+        primary_components = components
+        break
+    if primary is None:
+        raise SafeError("NO_VALID_MODEL_BASELINE")
+    # One within-family diagnostic fit per feature set, selected on the same
+    # CV MAE, preserves component evidence even when the median wins overall.
+    for diagnostic in [row for row in eligible if row["family"] == "two_stage" and row["candidate_status"] == "completed"]:
+        name = diagnostic["candidate"]
+        try:
+            if name == primary[0]["candidate"]:
+                diagnosed = primary[1]
+                components = primary_components
+            else:
+                diagnosed = _fit(estimators[name], development[columns], y, _weights(development, weight_column), development.group_id)
+                _, components = _prediction_bundle(diagnosed, heldout[columns])
+            if components is None:
+                raise SafeError("TWO_STAGE_COMPONENTS_REQUIRED")
+            details = _training_details(diagnosed, estimators[name], development.group_id)
+        except Exception:
+            _candidate_failure(out, attempts[name], "failed_diagnostic_refit", "TWO_STAGE_DIAGNOSTIC_REFIT_FAILED")
+            diagnostic.update(candidate_status="failed_diagnostic_refit", error_code="TWO_STAGE_DIAGNOSTIC_REFIT_FAILED",
+                              two_stage_diagnostic=False)
+            continue
+        joblib.dump({"format_version": 1, "candidate": name, "candidate_family": "two_stage",
+                     "candidate_registry_version": REGISTRY_VERSION, "features": columns, "target": target,
+                     "estimator": diagnosed, "training_details": details, "fit_partition": "development",
+                     "selection_metric": "mean_development_cv_MAE", "weight_column": weight_column,
+                     "environment": environment_versions()}, out/("two_stage_"+feature_set+"_model.joblib"))
+        diagnostic.update(two_stage_diagnostic=True, diagnostic_training=json.dumps(details, sort_keys=True))
+        attempts[name].update(two_stage_diagnostic=True, diagnostic_training=details)
+        stage_rows.extend(_component_rows(diagnosed, components, heldout, target, _weights(heldout, weight_column),
+                                          name, feature_set, "holdout", -1))
+        break
+    return (*primary, results, oof_rows, leaders, list(attempts.values()), stage_rows)
 
 
 def _validate_plan(table, partitions):
@@ -455,15 +534,16 @@ def search_levels(table: pd.DataFrame, features: list[str], target: str, out: Pa
     constant = np.ptp(y) == 0
     sets = {"all": features, "nonclimate": nonclimate}
     fold_scores, leaders, fitted_sets, attempts = [], [], {}, []
-    oof_rows = []
+    oof_rows, stage_rows = [], []
     for feature_set, columns in sets.items():
-        best, selected, predicted, results, oof, candidate_rows, audit = _evaluate_candidates(
+        best, selected, predicted, results, oof, candidate_rows, audit, stages = _evaluate_candidates(
             development, heldout, columns, target, feature_set, planned_folds, seed, weight_column, out, constant, candidate_ids)
         fitted_sets[feature_set] = (best, selected, predicted)
         fold_scores.extend(results)
         leaders.extend(candidate_rows)
         oof_rows.extend(oof)
         attempts.extend(audit)
+        stage_rows.extend(stages)
     best, fitted, predicted = fitted_sets["all"]
     nonclimate_best, nonclimate_fitted, nonclimate_predicted = fitted_sets["nonclimate"]
     baseline_fitted = MedianRegressor().fit(development[features], y, sample_weight=training_weights)
@@ -512,6 +592,7 @@ def search_levels(table: pd.DataFrame, features: list[str], target: str, out: Pa
     write_json(out / "candidate_audit.json", {"registry_version": REGISTRY_VERSION, "seed": seed,
                "requested_candidates": candidate_ids, "environment": environment_versions(), "attempts": attempts})
     pd.DataFrame(oof_rows).to_csv(out / "oof_predictions.csv", index=False)
+    _write_stage_metrics(out, stage_rows, attempts, planned_folds)
     predictions = heldout[["row_id", "group_id"]].copy()
     predictions["actual"] = held_y
     predictions["prediction"] = predicted

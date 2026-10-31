@@ -92,8 +92,9 @@ class ModelRegistryTests(unittest.TestCase):
                          "xgb_depth3_lr0.05_es", "xgb_depth3_lr0.1_es", "xgb_depth6_lr0.05_es", "xgb_depth6_lr0.1_es",
                          "lgbm_leaves15_min10", "lgbm_leaves15_min30", "lgbm_leaves31_min10", "lgbm_leaves31_min30",
                          "lgbm_leaves15_min10_es", "lgbm_leaves15_min30_es", "lgbm_leaves31_min10_es", "lgbm_leaves31_min30_es",
-                         "spline_knots5_alpha0.1", "spline_knots5_alpha1.0", "spline_knots8_alpha0.1", "spline_knots8_alpha1.0"])
-        self.assertEqual({r["family"] for r in catalog}, {"weighted_median", "elastic_net", "random_forest", "extra_trees", "xgboost", "lightgbm", "additive_spline"})
+                         "spline_knots5_alpha0.1", "spline_knots5_alpha1.0", "spline_knots8_alpha0.1", "spline_knots8_alpha1.0",
+                         "two_stage_c0.1_leaf2", "two_stage_c0.1_leaf10", "two_stage_c1.0_leaf2", "two_stage_c1.0_leaf10"])
+        self.assertEqual({r["family"] for r in catalog}, {"weighted_median", "elastic_net", "random_forest", "extra_trees", "xgboost", "lightgbm", "additive_spline", "two_stage"})
         self.assertTrue(all(r["supports_sample_weight"] and r["max_workers"] == 1 for r in catalog))
         json.dumps(catalog, allow_nan=False)
         specs = candidate_specs()

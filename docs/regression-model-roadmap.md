@@ -6,20 +6,23 @@ deduct-family sweep. Each target remains a separate regression task for each
 pavement surface. DataRobot's proprietary blueprints are not reproduced exactly.
 
 The base observed-level search contains a weighted-median baseline, two Elastic
-Net, two Random Forest, four ExtraTrees and four additive spline configurations. R0 provides the
-reproducible dataset and benchmark runner. Installing each optional XGBoost or
+Net, two Random Forest, four ExtraTrees, four additive spline and four
+occurrence/severity configurations. R0 provides the reproducible dataset and
+benchmark runner. Installing each optional XGBoost or
 LightGBM extra adds eight configurations. Build 1 completes R1 with a versioned
 registry and common evaluation/failure contract. Build 2 completes R2 with
 ExtraTrees; Build 3 completes R3 with fixed-budget and grouped-stopping XGBoost.
 Build 4 completes R4 with encoded, weighted LightGBM and native grouped stopping.
 Build 5 completes R5 with weighted additive spline regression.
-**The two-stage occurrence/severity family remains planned.**
+Build 6 completes R6 with weighted occurrence/positive-severity regression and
+separate component diagnostics.
 
-**Roadmap progress: 66.7% — 6 of 9 phase gates complete (R0 through R5).** Phases R0
+**Roadmap progress: 77.8% — 7 of 9 phase gates complete (R0 through R6).** Phases R0
 through R8 have equal weight for this count. This is accepted implementation
 coverage, not an estimate of elapsed engineering effort. Build publication,
 merge status and private deployment acceptance are reported separately.
-New algorithm families delivered: 4 of 5. The next build is R6, occurrence/severity regression.
+New algorithm families delivered: 5 of 5. The next build is R7, consolidated
+family comparisons, explanations and runtime controls.
 
 ## Delivery sequence and dependencies
 
@@ -31,7 +34,7 @@ New algorithm families delivered: 4 of 5. The next build is R6, occurrence/sever
 | R3 | XGBoost | R1, R2 evaluation pattern | Optional dependency and nested stopping tests pass | Complete — Build 3 |
 | R4 | LightGBM | R1, R3 stopping pattern | Weighted validation, encoded category and installation diagnostics pass | Complete — Build 4 |
 | R5 | Gaussian additive spline model | R1 | Additive shapes, weights and extrapolation checks pass | Complete — Build 5 |
-| R6 | Two-stage occurrence/severity model | R1 and one accepted severity estimator | Zero/positive/sparse training cases and prediction semantics pass | Planned |
+| R6 | Two-stage occurrence/severity model | R1 and one accepted severity estimator | Zero/positive/sparse training cases and prediction semantics pass | Complete — Build 6 |
 | R7 | Consolidated comparisons, explanations and runtime controls | R2–R6 | Every task reports candidates, failures, scores and importance consistently | Planned |
 | R8 | Full-pipeline release and private pilot | R7 | Existing workflow regression tests and private acceptance pass | Planned |
 
@@ -636,6 +639,87 @@ and real-data release acceptance remain in R8. Hosted CI is disabled.
 
 ## R6 — Two-stage occurrence and positive severity
 
+### Delivered in Build 6 (version 0.5.6)
+
+The base installation adds four stable IDs:
+
+| Candidate ID | Logistic C | Positive ExtraTrees leaf size |
+|---|---|---|
+| `two_stage_c0.1_leaf2` | 0.1 | 2 |
+| `two_stage_c0.1_leaf10` | 0.1 | 10 |
+| `two_stage_c1.0_leaf2` | 1.0 | 2 |
+| `two_stage_c1.0_leaf10` | 1.0 | 10 |
+
+`OccurrenceSeverityRegressor` uses a cloneable weighted logistic classifier
+on all current training rows and an accepted squared-error ExtraTrees regressor
+on positive rows only. The stages learn separate preprocessing from those
+respective training subsets. Logistic fitting uses lbfgs, tolerance 0.0001 and
+at most 1,000 iterations. Severity uses 200 trees, depth 12, no bootstrap,
+all features and one worker. No probability calibration or thresholding is added.
+Both stages receive their matching positive interval-day or group-balanced
+weights. Required group context enforces the frozen class/group support rules.
+All-zero, all-positive, constant-positive and sparse-class/positive-group
+policies have explicit recorded statuses; missing classes are never supplied
+by evaluation labels. The whole-task development-constant shortcut remains
+the existing median-only evaluation, with empty component exports.
+
+The saved estimator returns probability, expected positive magnitude and their
+product through `predict_occurrence_severity(X)`; `predict(X)` returns that
+product. Every component must be finite, nonnegative, correctly shaped and
+consistent with the product. Positive-class probability is extracted by class
+identity, including reversed native class order. Training audits retain row,
+group and weight support for both stages, fallbacks and classifier iterations.
+
+Primary selection remains complete development-CV MAE with baseline-first ties.
+Each feature set also selects its best complete two-stage CV candidate for a
+separate development-only diagnostic refit and component holdout evaluation.
+It is saved as `two_stage_all_model.joblib` or
+`two_stage_nonclimate_model.joblib`, even when the median wins primary selection.
+An unsuccessful diagnostic refit/prediction records a fixed failure code and
+tries the next complete within-family CV candidate; raw details stay private.
+Serialization/output failures remain fatal. No holdout labels choose a model.
+
+Task-level and consolidated `two_stage_predictions.csv` retain saved weights,
+all successful attempted OOF component rows, and holdout components for that
+one selected family diagnostic. `two_stage_metrics.csv` reports overall mean
+MAE/RMSE and RMSE skill, occurrence Brier score/skill and clipped log loss,
+trapezoidal PR-AUC and separate average precision, plus positive-only severity
+errors. Constant references are the corresponding fitting partition's weighted
+prevalence, weighted positive mean and their product (weighted overall mean).
+Metrics pool the saved evaluation weights; they do not replace mean-fold CV
+MAE. PR metrics are undefined for single-class evaluation, and severity errors
+are undefined without positive evaluation rows. Partial CV attempts are labeled
+and cannot enter selection. The offline dashboard explains the mean semantics
+and shows the within-family diagnostic without changing primary importance.
+Full family comparisons, component importance and runtime controls remain R7.
+
+### Frozen acceptance protocol
+
+Build 6 acceptance is frozen before measurement. Keep calibration seeds
+20261011/20261012/20261013 and verification seed 20261031, standard PCC rows,
+the shared grouped plan and interval-day weights. The four configurations use
+logistic occurrence C 0.1/1.0 and accepted depth-12 ExtraTrees severity with
+200 trees and leaf size 2/10. Mixed-class fitting needs at least five rows and
+two groups in each class; severity fitting needs ten positive rows and two
+positive groups. Sparse cases use weighted training prevalence/positive means.
+Neither evaluation labels nor a probability threshold choose these fallbacks.
+
+A fixed `two_stage_c1.0_leaf10` reference must show pooled development-OOF
+Brier skill and conditional-mean RMSE skill of at least 1% against fold-training
+constant baselines on the zero-inflated target, for every calibration seed.
+Its probability oracle RMSE must be at most 0.15 and overall conditional-mean
+oracle RMSE at most 3.5. OOF oracles only check software recovery; they are not
+predictors or selection inputs. MAE remains the production selection metric,
+and a median baseline may win. An independent uniform-mixture calculation checks
+mean/median loss semantics without fitting or evaluating on a preferred holdout.
+
+Final verification covers all nine PCC targets and a family-only zero-inflated
+stress search. Every configuration is serialized and scale-tested on a
+zero-inflated population, exercising both stages. Predeclared resource limits
+are 180 seconds wall/process CPU per standard task or complete four-model scale
+check, with 1,024 MiB peak process RSS on the recorded Linux environment.
+No grid or gate changes follow verification outcomes.
+
 **Implementation.** Fit an occurrence classifier to `I(y>0)` using all training
 rows and weights. Fit the positive-severity regressor only where the training
 target is positive, with corresponding weights. The first candidate can use
@@ -673,6 +757,64 @@ splits for both components and all competing single-stage regressors.
 
 **Gate.** Probability/mean/median semantics are documented and independently
 verified. Every sparse-class case terminates predictably without target leakage.
+
+### Functional acceptance evidence
+
+- All 427 local regression tests passed in 533.572 seconds, including 15 new
+  two-stage tests and a full-report checkpoint test for the component exports.
+  The fixed reference clears every declared probability/mean recovery and skill
+  gate on all three calibration seeds; oracle values never enter predictors or
+  model selection. The independent uniform-mixture calculation confirms that
+  the mean minimizes squared loss while the median can have lower absolute loss.
+- Native fitting receives all binary occurrence rows/weights and only positive
+  severity rows/weights. Analytical constant-input optima, reversed class order,
+  invalid components, sparse row/group support, repeated fitting, missing/unseen
+  predictors and serialization pass. Zero/all-positive and global constant or
+  missing-label cases retain the documented fallbacks and task statuses.
+- Shared fold identities match training audits. Changing holdout labels leaves
+  primary/diagnostic selection, CV scores, training audits and predictions
+  unchanged. Partial CV prediction failures cannot win; failed diagnostic refits
+  preserve the primary model and private error boundary. Consolidation retains
+  all component rows without displaying group identities in HTML. Altering
+  either consolidated component CSV is detected by full-run resume checks.
+
+Verification seed 20261031 completed all nine standard PCC targets and a
+two-stage-only zero-inflated stress search with no candidate failures or
+unavailable models. The standard grid contains 33 candidates including the
+median, both optional boosting families and all four two-stage configurations.
+Every saved primary/diagnostic prediction matches its reloaded estimator within
+absolute/relative tolerance `1e-12`; direct component round trips are identical.
+All four scale fits exercise both native stages and pass serialization.
+
+On the invented zero-heavy verification target, the median remains the primary
+MAE choice. The within-family diagnostic `two_stage_c1.0_leaf10` has weighted
+holdout Brier score 0.1817, Brier skill 17.52%, overall-mean RMSE 11.9131
+and RMSE skill 10.35% against its corresponding constant training references.
+Positive-only severity RMSE is 6.2329.
+These distinct loss comparisons are retained without forcing an MAE win or
+changing production selection. They are software-fixture results.
+
+Standard tasks took at most 88.75 seconds wall / 100.25 seconds process CPU,
+with 270.68 MiB peak process RSS. The family-only stress search took
+10.35 seconds wall / 38.98 seconds CPU.
+The four scale fits plus prediction/serialization took 3.56 seconds
+wall / 6.05 seconds CPU, with 279.55 MiB cumulative peak RSS.
+All predeclared resource gates passed. Measurements used Linux x86_64,
+Python 3.12.14, scikit-learn 1.8.0, NumPy 2.3.5, pandas 2.2.3, SciPy 1.17.0,
+packaging 26.3, XGBoost 3.1.3 and LightGBM 4.6.0.
+
+Reproduce two-stage functional and calibration checks with the base installation:
+
+```bash
+PYTHONPATH=src python -m unittest discover -s tests -p 'test_two_stage.py' -v
+```
+
+The existing benchmark accepts repeated selectors such as
+`--candidate two_stage_c0.1_leaf2 --candidate two_stage_c1.0_leaf10`, retaining
+the weighted median. Add `--all-targets` for all nine generated patterns.
+Hosted CI remains disabled. Actual macOS runtime, live ERA5 and private-data
+acceptance remain R8 release checks; comprehensive family explanations and
+runtime controls are next in R7.
 
 ## R7 — Comparisons, explanation and bounded execution
 
