@@ -144,7 +144,7 @@ class FullPipelineTests(unittest.TestCase):
         report = json.loads((pipeline / "run_report.json").read_text())
         for stage in ("01_split", "02_pairs_PCC", "03_location_rate_PCC", "04_climate_PCC", "05_targets_PCC",
                       "06_pci_PCC", "07_modeling_PCC", "07_partitions", "08_model_backend",
-                      "09_local_models", "10_report"):
+                      "09_local_models", "10_report", "11_qualification"):
             self.assertEqual(report["stages"][stage]["status"], "completed", stage)
         self.assertIn("climate", self.calls)
         self.assertIn("pavement_analytics.original.pci", self.calls)
@@ -164,6 +164,13 @@ class FullPipelineTests(unittest.TestCase):
         self.assertTrue(summary.original_target.str.endswith(" deduct_end").all())
         self.assertFalse(summary.original_target.eq("DetRatePerYear").any())
         html = (pipeline / "10_report/dashboard.html").read_text()
+        qualification = json.loads((pipeline/"11_qualification/qualification.json").read_text())
+        self.assertEqual(qualification["status"], "technical_checks_passed")
+        self.assertGreater(qualification["prediction_checks"], 0)
+        self.assertEqual(qualification["observed_successful_downloads"], 0)
+        self.assertIn("observed_live_era5_access", qualification["remaining_release_gates"])
+        self.assertIn("private_pilot_review", qualification["remaining_release_gates"])
+        self.assertIn("11_qualification/qualification.html", html)
         progress_state = json.loads((self.work / "progress.json").read_text())
         self.assertIn(progress_state["status"], {"completed", "completed_with_warnings"})
         self.assertEqual(progress_state["dashboard"], (pipeline / "10_report/dashboard.html").as_uri())
@@ -192,6 +199,20 @@ class FullPipelineTests(unittest.TestCase):
         self.assertNotEqual(Path(cfg["cdv_curves"]), self.curves)
         self.assertEqual(cfg["target_mode"], "deduct_families")
         self.assertEqual(cfg["datarobot"], "off")
+
+    def test_qualification_retains_empty_materials_as_explicit_tasks(self):
+        self.settings.update(surfaces=["PCC", "APC", "AC_AAC_ACC"],
+            local_model_options={"candidate_ids": ["enet_0.01"]})
+        self.profile.write_text(json.dumps(self.settings))
+        self.run_cli("--quiet")
+        result = json.loads((self.work/"pipeline/11_qualification/qualification.json").read_text())
+        self.assertEqual(result["status"], "technical_checks_passed")
+        self.assertEqual(set(result["climate"]), {"PCC", "APC", "AC_AAC_ACC"})
+        for surface in ("APC", "AC_AAC_ACC"):
+            tasks = [row for row in result["task_support"] if row["material"] == surface]
+            self.assertGreater(len(tasks), 0)
+            self.assertTrue(all(row["status"] in {"no_valid_target", "no_features"} for row in tasks))
+            self.assertEqual(result["climate"][surface]["successful_downloads"], 0)
 
     def prepare_setup(self, **options):
         self.profile.write_text(json.dumps(self.settings))

@@ -245,3 +245,87 @@ For full-run cancellation, resume the same workspace using the existing
 full run. An unchanged external ERA5 cache can be reused. See
 [model runtime and task checkpoints](full-pipeline.md#model-runtime-and-task-checkpoints)
 for fit budgets, model options, private artifact definitions and cache integrity.
+
+## Release qualification
+
+Version 0.5.8 adds automatic stage `11_qualification` to `full`. Keep using:
+
+```bash
+pavement full "/path/to/private/data" --open
+```
+
+The final dashboard links to the qualification HTML. The audit verifies every
+previous completed-stage artifact before loading any saved model. It checks
+original input/snapshot hashes, code/dependency fingerprints, row mappings,
+shared group/fold assignments, observed end-inspection deduct targets and
+original positive interval-day weights. Every completed candidate's holdout
+predictions are reproduced from the saved estimator and stage-07 inputs within
+absolute/relative tolerance 1e-12. Out-of-fold identities are checked in chunks.
+Skipped, constant and unsupported tasks remain explicit in the JSON evidence.
+This stage checks existing artifacts; it neither refits models nor requests
+additional weather data.
+
+Weather workers now save a per-surface acquisition receipt alongside the
+climate coverage CSV. A successful live acquisition requires a `downloaded`
+event, successful worker completion and exit code zero. Cache hits, requests
+without completed downloads, mocked weather and a data-source label alone do
+not satisfy that requirement. A cached-only run remains useful and succeeds;
+its qualification lists live ERA5 evidence as pending. No forced cache refresh
+is performed.
+
+Audit an already completed **0.5.8 run from the same code and dependency
+versions** into a new separate output directory:
+
+```bash
+pavement qualify "$HOME/pavement-runs/run-EXAMPLE" \
+  --output "$HOME/pavement-runs/pilot-evidence" --private-pilot --open
+```
+
+`--private-pilot` records the operator's declaration that the inputs are private
+pilot data. It does not automatically approve the pilot. Original run files are
+read without alteration. Older runs lacking the new fitting-environment/code
+evidence require a fresh full run after installing this revision; changing
+versions cannot be bypassed by editing the checkpoint. An existing external
+ERA5 cache can be reused.
+Keep source inputs and snapshots available at their recorded paths for these
+integrity checks.
+
+For generated model-stage checks without raw inspections, mapping files, CDV
+profiles, CDS credentials or network access:
+
+```bash
+pavement qualify --output "$HOME/pavement-runs/release-smoke" --open
+```
+
+This runs all installed candidates with the isolated worker, shared grouped
+partitions and original interval weights. It covers nine targets, three
+materials, five missing/constant/sparse edge cases per material and a mixed
+input stress case per material: 45 model tasks. Four adversarial cases must
+reject invalid weights, duplicate row IDs, target features and group-identity
+features. Completed candidate artifacts are reloaded and checked against saved
+predictions; family selections must follow development CV. The local report
+links to consolidated target/family results and records dependency versions,
+resource usage and output hashes. Detailed diagnostics remain in `runtime.log`.
+Target and model progress is printed while it runs.
+
+Use `--profile standard` or `--profile scale` for larger generated populations.
+Repeat `--candidate ID` to require particular registry IDs; the median baseline
+is retained. An unavailable explicitly requested optional model fails rather
+than being silently omitted. A selected-candidate run proves that subset only;
+the default is every installed candidate. Install both optional boosting extras
+to exercise the complete 33-candidate catalog. The standalone synthetic smoke
+runner also accepts `--compare` to enable these comparison sidecars.
+
+Qualification outputs must be new, outside inputs, outside all Git checkouts
+and free of symlink components. Do not publish generated data, fitted models,
+private reports or logs. Hosted CI remains disabled and private qualification
+execution on a GitHub Actions runner remains prohibited.
+
+Technical success is separate from the R8 release gate. Review the actual
+deployment Mac run, location/climate coverage, supported target populations,
+grouped baseline comparisons, prospective/retrospective interpretation and
+private-pilot acceptance. Synthetic or Linux-only checks cannot establish
+macOS execution, private operational accuracy or causal climate effects.
+The report keeps `private_pilot_review` pending even when a Mac and observed
+live weather satisfy their own evidence fields. Use the recorded evidence for
+that review; the command does not mark the roadmap complete by itself.

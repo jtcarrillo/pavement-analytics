@@ -67,6 +67,13 @@ def parser() -> Parser:
     monitor.add_argument("monitor_workspace", type=Path, nargs="?", help="Existing full-run workspace; defaults to the latest run under ~/pavement-runs")
     monitor.add_argument("--open", action="store_true", help="Open the local progress window")
     monitor.add_argument("--once", action="store_true", help="Write one snapshot instead of following an older run")
+    qualify = commands.add_parser("qualify", help="Run offline release fixtures or audit a completed private full run")
+    qualify.add_argument("run_workspace", type=Path, nargs="?", help="Existing full-run workspace; omit for an offline synthetic matrix")
+    qualify.add_argument("--output", type=Path, required=True, help="New private output directory outside inputs and source")
+    qualify.add_argument("--profile", choices=("smoke", "standard", "scale"), default="smoke", help="Offline model-stage fixture profile")
+    qualify.add_argument("--candidate", action="append", dest="candidate_ids", help="Require selected registry IDs in offline checks; baseline is retained")
+    qualify.add_argument("--private-pilot", action="store_true", help="Record operator-declared private inputs when auditing an existing full run")
+    qualify.add_argument("--open", action="store_true", help="Open the local qualification report")
     return root
 
 
@@ -94,6 +101,24 @@ def main(argv=None) -> int:
     changed_opt_in = False
     try:
         args = parser().parse_args(argv)
+        if args.command == "qualify":
+            if args.workspace is not None or (args.private_pilot and args.run_workspace is None) or (args.run_workspace is not None and args.candidate_ids):
+                raise SafeError("INVALID_QUALIFICATION_ARGUMENTS")
+            previous_opt_in = os.environ.get("PAVEMENT_PRIVATE_EXECUTION")
+            os.environ["PAVEMENT_PRIVATE_EXECUTION"] = "1"
+            changed_opt_in = True
+            refuse_public_execution()
+            from .qualification_cli import qualification_command
+            from .progress import FullProgress
+            with private_umask():
+                result_path = qualification_command(args, progress=FullProgress(sys.stdout))
+                if args.open:
+                    from .monitor import open_local_window
+                    if not open_local_window(result_path):
+                        print("DASHBOARD_OPEN_FAILED_OPEN_HTML_MANUALLY")
+            print("PRIVATE_QUALIFICATION_READY")
+            print("  Qualification: " + str(result_path))
+            return 0
         if args.command == "monitor":
             from .monitor import monitor_existing
             if args.workspace is not None and args.monitor_workspace is not None:

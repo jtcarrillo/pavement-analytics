@@ -35,7 +35,7 @@ def sanitize_model_event(event):
         if isinstance(value, str) and re.fullmatch(r"[A-Za-z][A-Za-z0-9_.-]{0,79}", value):
             result[key] = value
     for key, allowed in (("feature_set", {"all", "nonclimate"}),
-        ("phase", {"cv", "primary_refit", "two_stage_refit", "primary_importance", "comparison_refit", "family_importance"}),
+        ("phase", {"cv", "primary_refit", "two_stage_refit", "primary_importance", "comparison_refit", "family_importance", "qualification"}),
         ("operation", {"fit", "predict"})):
         if isinstance(event.get(key), str) and event.get(key) in allowed:
             result[key] = event[key]

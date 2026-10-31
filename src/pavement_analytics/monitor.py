@@ -22,7 +22,7 @@ MAX_LOG_BYTES = 256 * 1024
 MAX_LINE_BYTES = 8192
 SURFACE = r"(?:PCC|APC|AC_AAC_ACC)"
 STAGE = re.compile(r"(?:01_split|(?:02_pairs|03_location_rate|04_climate|05_targets|06_pci|07_modeling)_"
-                   + SURFACE + r"|05_fit_curves|07_partitions|08_model_backend|09_local_models|10_report)")
+                   + SURFACE + r"|05_fit_curves|07_partitions|08_model_backend|09_local_models|10_report|11_qualification)")
 
 
 def open_local_window(path: Path) -> bool:

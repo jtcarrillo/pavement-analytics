@@ -7,7 +7,9 @@ ExtraTrees, optional XGBoost and optional LightGBM implementations are delivered
 Additive spline and occurrence/severity regression are also delivered. Progress
 is 88.9% (R0–R7, eight of nine phase gates). All five new algorithm families,
 consolidated family comparisons/explanations, process deadlines and verified
-completed-target reuse are implemented. R8 release/private acceptance is next.
+completed-target reuse are implemented. R8 now adds automatic full-run audits
+and an offline release matrix; actual Mac/live ERA5/private-pilot acceptance
+remains open. See [release qualification](deployment.md#release-qualification).
 
 Version 0.4.0 adds the original preparation pipeline and a local deduct-family
 model sweep through `pavement full`. Original numerical helpers have generated
