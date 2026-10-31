@@ -162,7 +162,9 @@ location are joined transitively before splitting. If only section identity is
 available with precomputed climate, site-independent performance is not proven.
 
 Each task compares a group-weighted median baseline, two ElasticNet settings,
-and two random-forest settings. Imputation, scaling and categorical encoding
+two random-forest settings and four ExtraTrees settings. The ExtraTrees grid
+uses 200 trees, leaf sizes 2/10, maximum depth 12/unlimited and one worker.
+Imputation, scaling and categorical encoding
 are fitted within each training fold. CV selects the model; the selected model
 is fitted on development groups only. The saved model never trains on holdout.
 Each group has equal total weight within each evaluation set. Missing targets

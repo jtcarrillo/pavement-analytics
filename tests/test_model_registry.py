@@ -15,7 +15,7 @@ from pavement_analytics.model_registry import (
     CandidateSpec, REGISTRY_VERSION, build_candidates, candidate_catalog, candidate_specs,
 )
 from pavement_analytics.security import SafeError
-from pavement_analytics.study_modeling import _estimator, candidates, make_partitions, search_levels
+from pavement_analytics.study_modeling import _estimator, make_partitions, search_levels
 from pavement_analytics.synthetic_benchmark import create_bundle, run_smoke
 from temp_support import temporary_directory
 
@@ -86,8 +86,9 @@ class ModelRegistryTests(unittest.TestCase):
 
     def test_catalog_lists_only_implemented_families_and_stable_weighted_ids(self):
         catalog = candidate_catalog()
-        self.assertEqual([r["candidate"] for r in catalog], ["median", "enet_0.01", "enet_0.1", "rf_5", "rf_20"])
-        self.assertEqual({r["family"] for r in catalog}, {"weighted_median", "elastic_net", "random_forest"})
+        self.assertEqual([r["candidate"] for r in catalog], ["median", "enet_0.01", "enet_0.1", "rf_5", "rf_20",
+                         "et_leaf2_depth12", "et_leaf2_depthnone", "et_leaf10_depth12", "et_leaf10_depthnone"])
+        self.assertEqual({r["family"] for r in catalog}, {"weighted_median", "elastic_net", "random_forest", "extra_trees"})
         self.assertTrue(all(r["supports_sample_weight"] and r["max_workers"] == 1 for r in catalog))
         json.dumps(catalog, allow_nan=False)
         specs = candidate_specs()
@@ -100,7 +101,8 @@ class ModelRegistryTests(unittest.TestCase):
         train = data.iloc[:96]
         test = data.iloc[96:].copy()
         test["soil"] = "UNSEEN"
-        new, old = candidates(42), legacy_candidates(42)
+        old = legacy_candidates(42)
+        new = build_candidates(42, requested=list(old))
         self.assertEqual(list(new), list(old))
         for name, model in new.items():
             with self.subTest(candidate=name):
@@ -115,7 +117,7 @@ class ModelRegistryTests(unittest.TestCase):
 
     def test_cv_selection_scores_and_predictions_match_the_frozen_old_grid(self):
         before = self.search("legacy", pool=legacy_candidates(42))
-        after = self.search("registry")
+        after = self.search("registry", requested=list(legacy_candidates(42)))
         for key in ("candidate", "cv_mae", "cv_mae_std", "holdout_mae", "holdout_rmse", "holdout_r2", "climate_added_skill"):
             self.assertEqual(before[key], after[key])
         for file in ("holdout_predictions.csv", "fold_scores.csv", "oof_predictions.csv"):
