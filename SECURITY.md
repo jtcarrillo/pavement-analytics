@@ -25,8 +25,9 @@ The source handbook and project-specific planning documents do not belong here.
 5. The pre-push hook checks reachable history, commit metadata and references,
    including files deleted in later commits. It requires a private denylist on
    the publishing workstation; it never prints matches or private paths.
-6. Public CI uses hosted, disposable runners for generated tests only. It has no
-   private credentials, endpoints, data checkout, artifact upload or runtime cache.
+6. Hosted CI is disabled. The retained workflow is limited to generated tests
+   if re-enabled and has no private credentials, endpoints, data checkout,
+   artifact upload or runtime cache.
    Workflow changes and publication policy changes require maintainer review.
 7. Generated files are written with a restrictive process umask. On POSIX the
    workspace is set to owner-only permissions. Windows requires an equivalent

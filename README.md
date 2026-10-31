@@ -1,7 +1,7 @@
 # Pavement Analytics
 
 Generic Python tools for Pavement Condition Index (PCI), deduct values, and PAVER
-inspection exports. Version 0.5.0 provides a runnable curation and analysis
+inspection exports. Version 0.5.1 provides a runnable curation and analysis
 foundation. All operational inputs, configuration, provenance, fitted models,
 and results belong in a separate private workspace.
 
@@ -35,10 +35,12 @@ importance. Full model tuning and specialized sensitivity analysis remain on
 
 ## Install and test
 
-Use Python 3.11, 3.12 or 3.13. The public CI matrix runs the generated tests on
-Ubuntu with all three versions and on macOS with Python 3.12 and 3.13. Check the
-CI results for the revision you install. Use an approved package mirror on a
-restricted network, and keep the environment outside the source checkout.
+Use Python 3.11, 3.12 or 3.13. Hosted CI is currently disabled; run generated
+regression tests and source publication checks locally for each build. The
+previous hosted matrix covered Ubuntu with all three versions and macOS with
+Python 3.12 and 3.13. Validate the revision on the deployment workstation. Use an
+approved package mirror on a restricted network, and keep the environment
+outside the source checkout.
 
 ```bash
 python3 -m venv "$HOME/.venvs/pavement-analytics"
@@ -204,8 +206,8 @@ reachable history. Do not commit the list or put it in GitHub secrets.
 Read [SECURITY.md](SECURITY.md) and [deployment](docs/deployment.md) before the
 first push. A clean automated scan is not proof that arbitrary source prose
 contains no private information; review the exact outbound source and history
-inside the private environment before publishing. CI is a secondary check and
-runs only after content has reached GitHub.
+inside the private environment before publishing. Hosted CI is disabled. If
+re-enabled later, it remains a secondary check after content reaches GitHub.
 
 ## Documentation
 

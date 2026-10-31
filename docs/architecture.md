@@ -14,8 +14,9 @@ flowchart TD
   D --> F[Private versioned results]
 ```
 
-The diagram describes the internal processing path. A separate public CI job
-tests source with generated inputs. There is no data or results flow back to the
+The diagram describes the internal processing path. Hosted CI is disabled;
+generated regression tests run locally. The retained workflow is limited to
+generated inputs if re-enabled. There is no data or results flow back to the
 public repository.
 
 | Component | Module | Output location |
