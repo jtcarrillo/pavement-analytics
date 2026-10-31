@@ -324,6 +324,27 @@ for final fitting. Probe evaluation rounds and best retained model rounds are
 separate. The eight configurations add 80 CV model fits and 40 stopping probes
 per five-fold target, plus selected refits.
 
+Four additive spline candidates are included in the base installation: 5/8
+uniform knots, cubic univariate bases and weighted Ridge alpha 0.1/1.0. Each
+numeric predictor has its own curve and a separate linear missingness indicator.
+Constant/all-missing numeric predictors skip spline expansion. Categorical
+terms use one-hot encoding; reviewed subgrade, branch-use, construction and
+code fields stay categorical even when represented by numbers. Declared pandas
+categoricals and booleans are also preserved. No interaction basis is added.
+
+Spline bounds, medians, knots, categories and coefficients are learned within
+each training fold. Values beyond training support use constant extrapolation.
+Private training details record roles, bounds, knot vectors and feature blocks.
+The saved estimator's `predict_components(X)` returns an intercept and feature
+terms for its unclipped margin; `predict_margin(X)` reconstructs that sum.
+`predict(X)` then applies the shared nonnegative floor, which can alter strict
+additivity at the boundary. These terms describe predictive associations and
+can share effects when predictors are correlated. This is additive spline
+regression with an L2 coefficient penalty, not a pyGAM smoothing implementation.
+It adds 40 CV fits per five-fold target, plus selected refits. Closed-form Ridge
+fitting has no boosting iteration count; its training policy is recorded as
+`closed_form_weighted_ridge` with null iterations.
+
 Imputation, numeric scaling and
 categorical encoding are learned within training folds. Model selection uses
 cross-validation; the selected model is fitted on development groups only and

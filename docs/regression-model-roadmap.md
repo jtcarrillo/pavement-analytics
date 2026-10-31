@@ -5,20 +5,21 @@ spline models, and a two-stage occurrence/severity model for the existing
 deduct-family sweep. Each target remains a separate regression task for each
 pavement surface. DataRobot's proprietary blueprints are not reproduced exactly.
 
-The observed-level search contains a weighted-median baseline, two Elastic
-Net, two Random Forest and four ExtraTrees configurations. R0 provides the
+The base observed-level search contains a weighted-median baseline, two Elastic
+Net, two Random Forest, four ExtraTrees and four additive spline configurations. R0 provides the
 reproducible dataset and benchmark runner. Installing each optional XGBoost or
 LightGBM extra adds eight configurations. Build 1 completes R1 with a versioned
 registry and common evaluation/failure contract. Build 2 completes R2 with
 ExtraTrees; Build 3 completes R3 with fixed-budget and grouped-stopping XGBoost.
 Build 4 completes R4 with encoded, weighted LightGBM and native grouped stopping.
-**Additive splines and two-stage models remain planned.**
+Build 5 completes R5 with weighted additive spline regression.
+**The two-stage occurrence/severity family remains planned.**
 
-**Roadmap progress: 55.6% — 5 of 9 phase gates complete (R0 through R4).** Phases R0
+**Roadmap progress: 66.7% — 6 of 9 phase gates complete (R0 through R5).** Phases R0
 through R8 have equal weight for this count. This is accepted implementation
 coverage, not an estimate of elapsed engineering effort. Build publication,
 merge status and private deployment acceptance are reported separately.
-New algorithm families delivered: 3 of 5. The next build is R5, additive spline regression.
+New algorithm families delivered: 4 of 5. The next build is R6, occurrence/severity regression.
 
 ## Delivery sequence and dependencies
 
@@ -29,7 +30,7 @@ New algorithm families delivered: 3 of 5. The next build is R5, additive spline 
 | R2 | ExtraTrees | R1 | Weighted fitting, mixed inputs, serialization and nonlinear fixtures pass | Complete — Build 2 |
 | R3 | XGBoost | R1, R2 evaluation pattern | Optional dependency and nested stopping tests pass | Complete — Build 3 |
 | R4 | LightGBM | R1, R3 stopping pattern | Weighted validation, encoded category and installation diagnostics pass | Complete — Build 4 |
-| R5 | Gaussian additive spline model | R1 | Additive shapes, weights and extrapolation checks pass | Planned |
+| R5 | Gaussian additive spline model | R1 | Additive shapes, weights and extrapolation checks pass | Complete — Build 5 |
 | R6 | Two-stage occurrence/severity model | R1 and one accepted severity estimator | Zero/positive/sparse training cases and prediction semantics pass | Planned |
 | R7 | Consolidated comparisons, explanations and runtime controls | R2–R6 | Every task reports candidates, failures, scores and importance consistently | Planned |
 | R8 | Full-pipeline release and private pilot | R7 | Existing workflow regression tests and private acceptance pass | Planned |
@@ -510,13 +511,66 @@ patterns on a generated standard bundle. Hosted CI remains disabled.
 
 ## R5 — Gaussian additive spline model
 
-**Implementation.** Start with a Gaussian identity-link additive regression:
-univariate B-spline bases from `SplineTransformer` plus weighted Ridge fitting.
-Label this explicitly as additive spline regression; it is not a byte-for-byte
-replacement for a proprietary DataRobot GAM or a pyGAM smoothing implementation.
-Proposed grid: 5/8 knots, degree 3, Ridge alpha 0.1/1.0, constant extrapolation.
-Use additive one-hot terms for categoricals and separate missing indicators.
-Avoid applying spline expansion to identifiers or arbitrary category codes.
+### Delivered in Build 5 (version 0.5.5)
+
+The base installation adds four stable IDs:
+
+| Candidate ID | Uniform knots | Ridge alpha |
+|---|---|---|
+| `spline_knots5_alpha0.1` | 5 | 0.1 |
+| `spline_knots5_alpha1.0` | 5 | 1.0 |
+| `spline_knots8_alpha0.1` | 8 | 0.1 |
+| `spline_knots8_alpha1.0` | 8 | 1.0 |
+
+`AdditiveSplineRegressor` fits independent cubic B-spline blocks for numeric
+predictors, additive one-hot terms for categoricals and separate linear numeric
+missingness indicators, then applies weighted Ridge to their concatenation.
+The coefficient penalty is L2, not a curvature/smoothing penalty. This is
+Gaussian identity-link additive spline regression, not proprietary DataRobot
+GAM reproduction or a pyGAM backend. No additional package is required.
+
+Every fold learns feature roles, median imputations, numeric support, knots,
+category mappings and coefficients on its training rows. Reviewed subgrade,
+branch-use, construction and code fields, explicit categorical declarations,
+pandas categorical types and booleans remain categorical even when numerically
+coded. Other numeric-looking fields follow the existing training-only parser;
+unreviewed numeric category codes require explicit typing/declaration. Constant
+and all-missing numeric columns skip expansion but retain their missing term.
+Uniform spline knots and constant extrapolation avoid unbounded tail curves.
+
+The private saved model offers `predict_components(X)`, returning an intercept
+and per-feature terms, and `predict_margin(X)` for their sum. `predict(X)` clips
+the margin at zero; this final floor can alter additivity at the boundary.
+Components are not causal effects or unique allocations among correlated
+features. The pure additive margin contains no interaction bases.
+
+Registry version 5 records the four configurations. Private training details
+include feature roles, median values, training bounds, full knot vectors,
+category/infrequent-category mappings and component block positions. They also
+record fitting groups and weights. The policy is `closed_form_weighted_ridge`
+with null iterations, rather than an invented boosting count. The existing
+model definitions and separate legacy rate grid are unchanged; a larger default
+pool can change the winner. Four settings add 40 CV fits per five-fold target,
+plus selected refits. Source fingerprints require a new run after this update.
+
+### Frozen acceptance protocol
+
+Build 5 acceptance is frozen before measurement: use the R2–R4 calibration
+seeds 20261011/20261012/20261013 and verification seed 20261031, with the same
+standard PCC population, grouped plan and interval weights. The grid is
+5/8 uniformly spaced knots, cubic bases, Ridge alpha 0.1/1.0 and constant
+extrapolation. For each calibration seed, the spline grid must improve
+development CV MAE by at least 20% against the median on linear and smooth
+targets. A fixed `spline_knots8_alpha0.1` development fit must recover each
+centered planted smooth driver curve (aging, temperature range, wetness) with
+grid RMSE at most 1.0, without using holdout outcomes. Centering removes the
+arbitrary additive intercept allocation. The pure-interaction limitation is
+checked algebraically rather than requiring a universal model winner.
+Final verification covers all nine PCC targets and a spline-only stress search;
+every configuration is independently serialized and scale-tested. Resource
+limits are declared as 180 seconds wall / process CPU per standard task or
+complete four-configuration scale check, with 1,024 MiB peak process RSS on the
+recorded Linux environment. No grid or gate changes follow verification results.
 
 **Tests.** Recover the planted smooth shapes from `level_smooth`, check linear
 reference performance, all-missing/constant predictors, boundary/extrapolation
@@ -526,6 +580,59 @@ additive model's weaker performance on pure interactions is reported honestly.
 **Gate.** Shape and prediction tests pass across fixed calibration seeds.
 Any later pyGAM variant must separately prove weighted fitting, cloning,
 serialization and platform support before registry admission.
+
+### Functional acceptance evidence
+
+- All 411 local regression tests passed, including the existing pipeline,
+  reports, original-model parity, tree and boosting suites. All 11 new spline
+  tests pass. The six calibration seed/target cases clear the frozen 20%
+  development-CV improvement gate, and all nine centered driver curves meet
+  the declared RMSE-at-most-1.0 requirement using the fixed development fit.
+- Every configuration passes analytical sample-weight forwarding, cloning,
+  deterministic repetition, missing/unseen inputs and serialization. Separate
+  tests prove that medians and knot support remain fixed when new inputs arrive,
+  coded categorical fields stay one-hot, and missing indicators stay linear.
+  Constant and all-missing numeric columns skip spline expansion.
+- Extrapolation beyond either training boundary equals the corresponding
+  boundary prediction. Feature terms plus intercept reconstruct the margin
+  within `1e-12`; nonnegative prediction clips that margin. An independent
+  product fixture has a true cross difference of 40, while the fitted additive
+  margin has zero cross difference, demonstrating its interaction limitation.
+- Changing holdout labels leaves selected candidates, CV errors, training
+  audits and predictions unchanged. Fitting-group identities match the shared
+  plan, with no stopping populations. Constant, missing-label and
+  positive-only-holdout controls retain explicit statuses. Invalid weights or
+  unsupported spline settings fail explicitly.
+
+Verification seed 20261031 completed all nine standard PCC targets and a
+spline-only stress search without candidate failures or unavailable models.
+Every saved prediction matches its reloaded model within absolute/relative
+tolerance `1e-12`; direct configuration round trips use absolute tolerance
+`1e-12`. The full search selected additive splines on the smooth target,
+ElasticNet on linear/nonclimate targets, LightGBM on threshold/interaction
+targets and the median on zero-heavy/constant targets. The no-signal control's
+small LightGBM MAE gain remains flagged unreliable with negative holdout
+R-squared. The family-only stress search selected additive splines.
+
+Standard tasks took at most 71.86 seconds wall / 82.49 seconds process CPU,
+with 249.03 MiB peak process RSS. The spline-only stress search took 3.52 seconds
+wall / 4.31 seconds CPU. The four scale fits plus prediction/serialization took
+0.67 seconds wall / 2.33 seconds CPU, with 274.97 MiB cumulative peak RSS.
+All declared resource gates passed. Measurements used Linux x86_64,
+Python 3.12.14, scikit-learn 1.8.0, NumPy 2.3.5, pandas 2.2.3, SciPy 1.17.0,
+packaging 26.3, XGBoost 3.1.3 and LightGBM 4.6.0.
+
+Reproduce spline functional and calibration checks with the base installation:
+
+```bash
+PYTHONPATH=src python -m unittest discover -s tests -p 'test_spline_model.py' -v
+```
+
+The existing benchmark supports selectors such as
+`--candidate spline_knots5_alpha0.1 --candidate spline_knots8_alpha0.1`, retaining
+the shared weighted median. Add `--all-targets` for all nine generated target
+patterns. These checks use invented model-stage data; macOS runtime, live ERA5
+and real-data release acceptance remain in R8. Hosted CI is disabled.
 
 ## R6 — Two-stage occurrence and positive severity
 
