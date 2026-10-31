@@ -36,7 +36,7 @@ class OptionalBoostingTests(unittest.TestCase):
     def test_absent_dependency_preserves_base_search_and_is_explicitly_visible(self):
         original = importlib.util.find_spec
         def available(name, *args, **kwargs):
-            return None if name == "xgboost" else original(name, *args, **kwargs)
+            return None if name in {"xgboost", "lightgbm"} else original(name, *args, **kwargs)
         frame, _, _, plan, _, _ = records(profile="smoke")
         frame = frame.loc[frame.material.eq("PCC")]
         with patch("pavement_analytics.model_registry.importlib.util.find_spec", side_effect=available):
@@ -52,7 +52,7 @@ class OptionalBoostingTests(unittest.TestCase):
             result = search_levels(frame, FEATURES, "level_linear", self.root/"base", plan,
                                    CLIMATE_FEATURES, weight_column="delta_days")
         self.assertEqual(result["candidate_failure_count"], 0)
-        self.assertEqual(result["candidate_unavailable_count"], 16)
+        self.assertEqual(result["candidate_unavailable_count"], 32)
         self.assertNotEqual(result["candidate_family"], "xgboost")
 
     def test_unsupported_version_has_a_distinct_status_and_required_preflight_error(self):

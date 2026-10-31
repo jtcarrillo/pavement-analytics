@@ -307,6 +307,23 @@ stay in private exports. The eight XGBoost settings add 80 CV model fits and
 40 stopping probes per five-fold target, plus selected refits. Unavailable,
 unsupported or unloadable backends have explicit statuses; base models continue.
 
+The optional `lightgbm` extra (`>=4.6.0,<4.7`) adds eight more CPU configurations:
+15/31 leaves, minimum leaf observations 10/30, learning rate 0.05, and up to
+300 rounds, with fixed or grouped-stopping variants. They reuse the same
+training-only split/refit policy and interval weights. Fresh native callbacks
+use patience 20 and weighted MAE. CPU fits use `n_jobs=1`, deterministic mode
+and column-wise histograms. Inputs follow the existing numeric/one-hot path;
+native categorical support is not introduced.
+
+LightGBM audits retain raw feature order, neutral encoded column names,
+transformed feature names, category and infrequent-category mappings, for both
+the stopping probe and final refit. These mappings remain private. Native
+LightGBM can finish below its requested round limit when no split is useful;
+`iterations` records the actual count and `requested_iterations` the limit used
+for final fitting. Probe evaluation rounds and best retained model rounds are
+separate. The eight configurations add 80 CV model fits and 40 stopping probes
+per five-fold target, plus selected refits.
+
 Imputation, numeric scaling and
 categorical encoding are learned within training folds. Model selection uses
 cross-validation; the selected model is fitted on development groups only and

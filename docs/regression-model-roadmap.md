@@ -7,17 +7,18 @@ pavement surface. DataRobot's proprietary blueprints are not reproduced exactly.
 
 The observed-level search contains a weighted-median baseline, two Elastic
 Net, two Random Forest and four ExtraTrees configurations. R0 provides the
-reproducible dataset and benchmark runner. Installing the optional XGBoost
-extra adds eight configurations. Build 1 completes R1 with a versioned
+reproducible dataset and benchmark runner. Installing each optional XGBoost or
+LightGBM extra adds eight configurations. Build 1 completes R1 with a versioned
 registry and common evaluation/failure contract. Build 2 completes R2 with
 ExtraTrees; Build 3 completes R3 with fixed-budget and grouped-stopping XGBoost.
-**LightGBM, additive splines and two-stage models remain planned.**
+Build 4 completes R4 with encoded, weighted LightGBM and native grouped stopping.
+**Additive splines and two-stage models remain planned.**
 
-**Roadmap progress: 44.4% — 4 of 9 phase gates complete (R0 through R3).** Phases R0
+**Roadmap progress: 55.6% — 5 of 9 phase gates complete (R0 through R4).** Phases R0
 through R8 have equal weight for this count. This is accepted implementation
 coverage, not an estimate of elapsed engineering effort. Build publication,
 merge status and private deployment acceptance are reported separately.
-New algorithm families delivered: 2 of 5. The next build is R4, LightGBM.
+New algorithm families delivered: 3 of 5. The next build is R5, additive spline regression.
 
 ## Delivery sequence and dependencies
 
@@ -27,7 +28,7 @@ New algorithm families delivered: 2 of 5. The next build is R4, LightGBM.
 | R1 | Candidate registry and common evaluation contract | R0 | Existing candidates retain their selection/prediction behavior | Complete — Build 1 |
 | R2 | ExtraTrees | R1 | Weighted fitting, mixed inputs, serialization and nonlinear fixtures pass | Complete — Build 2 |
 | R3 | XGBoost | R1, R2 evaluation pattern | Optional dependency and nested stopping tests pass | Complete — Build 3 |
-| R4 | LightGBM | R1, R3 stopping pattern | Weighted validation, category and platform checks pass | Planned |
+| R4 | LightGBM | R1, R3 stopping pattern | Weighted validation, encoded category and installation diagnostics pass | Complete — Build 4 |
 | R5 | Gaussian additive spline model | R1 | Additive shapes, weights and extrapolation checks pass | Planned |
 | R6 | Two-stage occurrence/severity model | R1 and one accepted severity estimator | Zero/positive/sparse training cases and prediction semantics pass | Planned |
 | R7 | Consolidated comparisons, explanations and runtime controls | R2–R6 | Every task reports candidates, failures, scores and importance consistently | Planned |
@@ -388,22 +389,124 @@ stored in the source repository.
 
 ## R4 — LightGBM
 
-**Implementation.** Add a separate optional `lightgbm` extra and validate its
-installation on supported macOS/Linux environments. Begin with the same encoded
-feature path as the existing estimators. Native categorical support is a later
-candidate variant, not an implicit schema change. Proposed first grid: 15/31
-leaves, minimum leaf observations 10/30, learning rate 0.05, 300 trees.
+### Delivered in Build 4 (version 0.5.4)
 
-Reuse R3's training-only stopping design, adapted to the pinned LightGBM API.
-Record feature order and any categorical mapping explicitly. Unknown holdout
-categories and missing-value sentinels must be handled consistently. Do not
-assume callback/validation parameter names remain identical across versions.
+The optional `lightgbm` extra adds eight stable candidate IDs:
+
+| Fixed-budget ID | Grouped-stopping ID | Leaves | Minimum leaf observations |
+|---|---|---|---|
+| `lgbm_leaves15_min10` | `lgbm_leaves15_min10_es` | 15 | 10 |
+| `lgbm_leaves15_min30` | `lgbm_leaves15_min30_es` | 15 | 30 |
+| `lgbm_leaves31_min10` | `lgbm_leaves31_min10_es` | 31 | 10 |
+| `lgbm_leaves31_min30` | `lgbm_leaves31_min30_es` | 31 | 30 |
+
+All use learning rate 0.05, up to 300 rounds, squared-error regression,
+weighted MAE stopping, CPU `gbdt`, one estimator worker, deterministic mode
+and forced column-wise histograms. Stopped variants use fresh native callbacks
+with patience 20 and the existing 20% training-group split. The package
+range is `>=4.6.0,<4.7`; admission uses 4.6.0. Installed supported candidates
+join `full` and `study` automatically, with no new private configuration keys.
+
+The wrapper reuses the original numeric/one-hot preprocessing and R3's grouped
+splitter. It transforms stopping inputs with fitting-only preprocessing, passes
+matching fitting/evaluation weights, then refits fresh preprocessing and a
+fixed-count model on all current training rows. Outer CV and holdout groups
+never supply stopping data. LightGBM's best-iteration count is already one-based;
+the wrapper uses it directly, independently of XGBoost's zero-based convention.
+
+Neutral encoded column names avoid restrictions on quoted raw category labels.
+Private training audits record raw feature order, encoded/transformed order,
+category mappings and infrequent-category mappings separately for the probe and
+final refit. The saved preprocessing retains its fitted encoders. Prediction
+uses the same encoded columns; native categorical support is not introduced.
+
+Actual native rounds can be below the requested budget even without a stopping
+callback when no useful split remains. The common leaderboard's iteration fields
+contain actual fitted counts; `requested_iterations`, probe evaluation rounds
+and probe retained-model rounds are separate fields in training details.
+Registry version 4 and environment provenance include the optional backend.
+Missing, unsupported and unloadable backends remain distinct outcomes; explicitly
+required unusable candidates fail preflight. Existing model definitions and
+the legacy rate grid remain unchanged. The expanded pool can change winners.
+
+### Frozen acceptance protocol
+
+Build 4 acceptance is frozen before measurement: calibration seeds
+20261011/20261012/20261013 and verification seed 20261031, with the same standard
+PCC population, grouped plan and interval weights as R2/R3. Four configurations
+use 15/31 leaves, minimum leaf observations 10/30, learning rate 0.05 and a
+300-round budget. Four matching stopped configurations use patience 20 and a
+20% training-group stopping fraction. Each uses deterministic CPU training and
+one worker. Both the best fixed and best stopped grids must improve development
+CV MAE at least 20% against the median on threshold/interaction targets for
+every calibration seed; no tuning on verification results is permitted.
+Final verification covers all nine PCC targets and a LightGBM-only stress
+search. All eight configurations receive direct serialization and scale checks.
+The predeclared limits are 180 seconds wall / process CPU per standard task or
+complete scale check, and 1,024 MiB peak process RSS on the recorded Linux
+environment. Deployment macOS runtime acceptance remains an R8 release check.
 
 **Tests.** Threshold/interaction targets, stress schema, evaluation weights,
 rare target values, serialization and installation/dependency diagnostics.
 
 **Gate.** Weighted fixed-budget and early-stopping tests pass; native-category
 variants, if introduced, have independent schema and unseen-category coverage.
+
+### Functional acceptance evidence
+
+- All 400 local regression tests passed, including the existing pipeline,
+  reports, original-model parity, ExtraTrees and XGBoost suites. All 14 new
+  LightGBM admission tests pass. The six calibration seed/target cases clear
+  the frozen development-CV gate independently for fixed and stopped grids.
+- Every configuration passes analytical sample-weight forwarding, deterministic
+  repetition, cloning, mixed/missing/unseen inputs and serialization. Native
+  fitting interception verifies exact stopping transformations, evaluation
+  weights and weighted MAE. Holdout-label mutation leaves CV selection,
+  training audits and predictions unchanged; recorded groups exclude evaluation
+  populations.
+- Quoted and high-cardinality categories preserve explicit encoded order and
+  infrequent-category mappings. No native categorical variant is enabled.
+  Tests distinguish requested 300-round fitting from a one-round native model
+  when no split is possible, and verify the one-based stopping convention.
+- Constant, missing-label, positive-only-holdout and one-positive-group controls
+  terminate predictably. Missing, unsupported and native-load failure cases
+  remain visible, with raw loader diagnostics kept privately. The optional
+  LightGBM version contributes to full-run checkpoint invalidation.
+- Linux runtime fitting was tested with LightGBM 4.6.0. Pip successfully resolved
+  and downloaded its macOS 12+ ARM64 wheel for Python 3.12. This checks package
+  availability, not native macOS loading/fitting. Deployment commands and OpenMP
+  guidance are in `docs/deployment.md`; macOS runtime qualification remains R8.
+
+Final verification seed 20261031 completed all nine standard PCC targets and
+a separate LightGBM-only stress search without candidate failures or unavailable
+models. All saved predictions match reloaded predictions within absolute/relative
+tolerance `1e-12`; direct configuration round trips use absolute tolerance
+`1e-12`. LightGBM was selected on smooth, threshold and interaction targets;
+ElasticNet remained selected on linear and nonclimate targets, and the median
+on zero-heavy and constant targets. The no-signal control selected a stopped
+LightGBM with only 0.34% holdout MAE skill, negative holdout R-squared and
+`importance_reliable=false`; that chance variation is not signal recovery.
+The family-only stress search selected a stopped LightGBM configuration.
+
+Standard tasks took at most 69.68 seconds wall / 79.45 seconds process CPU,
+with 241.39 MiB peak RSS. Stress took 14.44 seconds wall / CPU. The eight scale
+fits plus prediction/serialization checks took 4.55 seconds wall / CPU, with
+266.20 MiB cumulative peak RSS. All predeclared resource gates passed.
+Measurements used Linux x86_64, Python 3.12.14, LightGBM 4.6.0, XGBoost 3.1.3,
+scikit-learn 1.8.0, NumPy 2.3.5, pandas 2.2.3, SciPy 1.17.0 and packaging 26.3.
+Live ERA5 and private-pilot acceptance remain in R8.
+
+Reproduce the LightGBM functional and calibration checks:
+
+```bash
+python -m pip install -e '.[lightgbm]'
+PYTHONPATH=src python -m unittest discover -s tests -p 'test_lightgbm.py' -v
+```
+
+The benchmark supports required selectors such as
+`--candidate lgbm_leaves15_min10 --candidate lgbm_leaves15_min10_es`, always
+retaining its shared weighted median. `--all-targets` exercises all nine target
+patterns on a generated standard bundle. Hosted CI remains disabled.
 
 ## R5 — Gaussian additive spline model
 

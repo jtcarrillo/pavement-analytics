@@ -1,7 +1,7 @@
 # Pavement Analytics
 
 Generic Python tools for Pavement Condition Index (PCI), deduct values, and PAVER
-inspection exports. Version 0.5.3 provides a runnable curation and analysis
+inspection exports. Version 0.5.4 provides a runnable curation and analysis
 foundation. All operational inputs, configuration, provenance, fitted models,
 and results belong in a separate private workspace.
 
@@ -22,6 +22,8 @@ and results belong in a separate private workspace.
   versioned model registry, with weighted fitting and candidate failure audits.
 - Optional XGBoost adds four fixed-budget and four grouped-stopping settings,
   with CPU-only fitting and recorded iteration counts and stopping groups.
+- Optional LightGBM adds eight CPU settings through the same evaluation plan,
+  with encoded feature schemas and actual/refit iteration counts in its audits.
 - Immutable run outputs, file hashes and verified resume.
 - An SSH adapter that fetches an exact private data commit into an external workspace.
 - Publication checks for allowed files, Git history and private denylist matches.
@@ -84,6 +86,15 @@ The supported XGBoost range is `>=3.1.3,<3.2`; admission was tested with 3.1.3.
 Absent or unsupported optional candidates remain visible in model comparisons
 while the base candidates continue. Dependency changes require a new run under
 the full-pipeline resume checks.
+
+To include both optional boosting families:
+
+```bash
+python -m pip install -e '.[original,xgboost,lightgbm]'
+```
+
+LightGBM is bounded to `>=4.6.0,<4.7`, with 4.6.0 used for admission. See
+[deployment instructions](docs/deployment.md) for its installation checks.
 It retains the original inspection intervals and climate definitions, including
 PG, cooling, rainflow and construction-aging calculations. The final offline
 dashboard ranks target predictability and shows the best predictors per family.
