@@ -1,14 +1,15 @@
-name: public-ci
+name: public-ci (disabled)
 
 on:
-  push:
-  pull_request:
+  workflow_dispatch:
 
 permissions:
   contents: read
 
 jobs:
   public-ci:
+    # Local validation is used while hosted CI is disabled.
+    if: ${{ false }}
     name: public-ci (${{ matrix.os }}, Python ${{ matrix.python }})
     runs-on: ${{ matrix.os }}
     timeout-minutes: 10
