@@ -197,6 +197,7 @@ runs only after content has reached GitHub.
 - [Private configuration and data contracts](docs/contracts.md)
 - [Deployment and repository setup](docs/deployment.md)
 - [Scope, validation and next components](docs/roadmap.md)
+- [Regression model expansion and synthetic test dataset](docs/regression-model-roadmap.md)
 
 The project provides analysis tools, not an authoritative replacement for a
 specified pavement survey standard. Validate privately supplied curve profiles

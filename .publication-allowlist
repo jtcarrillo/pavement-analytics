@@ -15,6 +15,7 @@ docs/deployment.md
 docs/family-analysis.md
 docs/full-pipeline.md
 docs/roadmap.md
+docs/regression-model-roadmap.md
 docs/synthetic-example.md
 pyproject.toml
 requirements-tested.txt
@@ -54,6 +55,7 @@ src/pavement_analytics/reporting.py
 src/pavement_analytics/security.py
 src/pavement_analytics/study.py
 src/pavement_analytics/study_modeling.py
+src/pavement_analytics/synthetic_benchmark.py
 src/pavement_analytics/study_reporting.py
 tests/temp_support.py
 tests/test_analysis.py
@@ -81,6 +83,7 @@ tests/test_publication.py
 tests/test_reporting.py
 tests/test_study.py
 tests/test_study_modeling.py
+tests/test_synthetic_benchmark.py
 tests/test_study_reporting.py
 tests/test_temp_support.py
 tests/test_ungraded_deducts.py
