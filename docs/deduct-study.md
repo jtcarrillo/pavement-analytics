@@ -184,6 +184,26 @@ Categorical features use additive one-hot terms; missing indicators remain
 linear. Learned feature roles, medians, knots and category mappings are fitted
 only on training rows. The saved model exposes private pre-clipping feature
 components, which are predictive associations and not unique causal effects.
+
+Four base-install two-stage configurations pair logistic occurrence C 0.1/1.0
+with positive-only ExtraTrees means (200 trees, depth 12, leaf size 2/10).
+Both stages receive the matching group-balanced training weights. A classifier
+needs five rows and two groups per class; a severity regressor needs ten
+positive rows and two positive groups. Sparse training classes use weighted
+prevalence/positive-mean fallbacks; absent positives produce zero. All-positive
+training uses probability one. The existing global constant-target shortcut
+still evaluates only the median baseline.
+
+The product of occurrence probability and positive conditional mean is an
+overall conditional mean, which need not minimize MAE. Primary selection still
+uses mean CV MAE. For each feature set, the best complete two-stage CV candidate
+also supplies a development-only diagnostic model and holdout component rows,
+including when the median wins overall. Component CSVs report pooled weighted
+mean RMSE, Brier score, log loss, trapezoidal PR-AUC, average precision and
+positive-only severity errors. Single-class ranking metrics are undefined;
+severity errors without positive evaluation rows are undefined. These pooled
+diagnostics do not replace the existing mean-fold MAE selection or importance.
+
 Imputation, scaling and categorical encoding
 are fitted within each training fold. CV selects the model; the selected model
 is fitted on development groups only. The saved model never trains on holdout.
@@ -223,6 +243,8 @@ model fitting; reruns reuse the climate cache and create new model artifacts.
 | `feature_importance.csv` | Consolidated predictor and climate-block importance |
 | `model_leaderboard.csv` | CV comparisons for all candidate models |
 | `predictions.csv` | Full holdout predictions for all modeled targets |
+| `two_stage_predictions.csv` | Two-stage OOF components and within-family diagnostic holdout components |
+| `two_stage_metrics.csv` | Probability, conditional-mean and positive-severity diagnostics |
 | `partitions.csv` | Shared fixed group/holdout/fold assignments |
 | `materials/<material>/<target>/` | Separate models, scores, predictions and audits |
 | `climate_rows.csv`, `climate_audit.json` | Historical windows, coverage, request/cache provenance |

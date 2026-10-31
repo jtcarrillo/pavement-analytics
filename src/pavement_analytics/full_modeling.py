@@ -243,4 +243,5 @@ def consolidate_full_models(out: Path, summaries: list[dict] | None = None,
     write_json(report_out / "report_audit.json", audit)
     build_study_report(report_out, summaries, audit, model_root=out)
     return [report_out / "report_audit.json", *[report_out / name for name in (
-        "dashboard.html", "target_summary.csv", "feature_importance.csv", "model_leaderboard.csv", "predictions.csv")]]
+        "dashboard.html", "target_summary.csv", "feature_importance.csv", "model_leaderboard.csv", "predictions.csv",
+        "two_stage_predictions.csv", "two_stage_metrics.csv")]]

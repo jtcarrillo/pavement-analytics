@@ -13,6 +13,7 @@ import numpy as np
 import pandas as pd
 
 from .security import SafeError, reject_links
+from .two_stage import STAGE_PREDICTION_COLUMNS, STAGE_METRIC_COLUMNS
 
 SUMMARY_COLUMNS = [
     "material", "target", "original_target", "status", "candidate", "cv_mae", "cv_mae_std",
@@ -32,7 +33,7 @@ PREDICTION_COLUMNS = ["material", "target", "row_id", "group_id", "actual", "pre
 LEADER_COLUMNS = ["material", "target", "candidate", "feature_set", "cv_mae", "cv_mae_std",
                   "cv_rmse", "cv_wins_vs_baseline", "family", "candidate_status", "error_code",
                   "folds_completed", "selected", "parameters", "cv_iterations", "cv_training",
-                  "final_iterations", "final_training"]
+                  "final_iterations", "final_training", "two_stage_diagnostic", "diagnostic_training"]
 SCATTER_LIMIT = 600
 SPARSE_NONZERO_THRESHOLD = .05
 
@@ -312,6 +313,7 @@ def build_study_report(out: Path, summaries: list[dict], audit: dict,
     if not model_root.is_dir():
         raise SafeError("REPORT_MODEL_DIRECTORY_REQUIRED")
     seen, records, importance_tables, prediction_tables, leader_tables, cards = set(), [], [], [], [], []
+    stage_prediction_tables, stage_metric_tables = [], []
     for summary in summaries:
         material, target = str(summary.get("material", "")), str(summary.get("target", ""))
         if (not re.fullmatch(r"[A-Za-z0-9_-]+", material)
@@ -328,9 +330,12 @@ def build_study_report(out: Path, summaries: list[dict], audit: dict,
         predictions = _read(_path(root, "holdout_predictions.csv"))
         importance = _read(_path(root, "importance.csv"))
         leaders = _read(_path(root, "leaderboard.csv"))
+        stage_predictions = _read(_path(root, "two_stage_predictions.csv"))
+        stage_metrics = _read(_path(root, "two_stage_metrics.csv"))
         _metrics(row, predictions)
         records.append(row)
-        for frame, collection in [(predictions, prediction_tables), (importance, importance_tables), (leaders, leader_tables)]:
+        for frame, collection in [(predictions, prediction_tables), (importance, importance_tables), (leaders, leader_tables),
+                                  (stage_predictions, stage_prediction_tables), (stage_metrics, stage_metric_tables)]:
             if not frame.empty:
                 frame.insert(0, "target", target)
                 frame.insert(0, "material", material)
@@ -374,6 +379,18 @@ def build_study_report(out: Path, summaries: list[dict], audit: dict,
                        _percent(row["climate_added_skill"]) + '</strong> relative to the model selected '
                        'using other predictors alone. Positive means lower error; this comparison includes '
                        'model selection and is not a causal effect.</p>')
+        if not stage_metrics.empty:
+            component_holdout = stage_metrics.loc[stage_metrics.partition.eq("holdout") & stage_metrics.feature_set.eq("all")]
+            if not component_holdout.empty:
+                component = component_holdout.iloc[0]
+                detail += '<h3>Two-stage conditional-mean diagnostics</h3>'
+                detail += ('<p>Occurrence probability times positive mean estimates the overall mean. '
+                           'It need not minimize MAE on zero-heavy data. The diagnostic model is selected '
+                           'within its family using development CV MAE; the primary selection is unchanged.</p>')
+                detail += _table(["Diagnostic model", "Mean RMSE", "Occurrence Brier", "Log loss", "Positive severity RMSE"], [[
+                    str(component.candidate), _number(component.mean_prediction_rmse),
+                    _number(component.occurrence_brier), _number(component.occurrence_log_loss),
+                    _number(component.positive_severity_rmse)]])
         if not importance.empty and "kind" in importance:
             blocks = importance.loc[importance.kind.eq("climate_block")]
             if len(blocks):
@@ -399,8 +416,13 @@ def build_study_report(out: Path, summaries: list[dict], audit: dict,
     importance_table = pd.concat(importance_tables, ignore_index=True).reindex(columns=IMPORTANCE_COLUMNS) if importance_tables else pd.DataFrame(columns=IMPORTANCE_COLUMNS)
     prediction_table = pd.concat(prediction_tables, ignore_index=True).reindex(columns=PREDICTION_COLUMNS) if prediction_tables else pd.DataFrame(columns=PREDICTION_COLUMNS)
     leader_table = pd.concat(leader_tables, ignore_index=True).reindex(columns=LEADER_COLUMNS) if leader_tables else pd.DataFrame(columns=LEADER_COLUMNS)
+    stage_prediction_columns = ["material", "target", *STAGE_PREDICTION_COLUMNS]
+    stage_metric_columns = ["material", "target", *STAGE_METRIC_COLUMNS]
+    stage_prediction_table = pd.concat(stage_prediction_tables, ignore_index=True).reindex(columns=stage_prediction_columns) if stage_prediction_tables else pd.DataFrame(columns=stage_prediction_columns)
+    stage_metric_table = pd.concat(stage_metric_tables, ignore_index=True).reindex(columns=stage_metric_columns) if stage_metric_tables else pd.DataFrame(columns=stage_metric_columns)
     for filename, frame in [("target_summary.csv", summary_table), ("feature_importance.csv", importance_table),
-                            ("predictions.csv", prediction_table), ("model_leaderboard.csv", leader_table)]:
+                            ("predictions.csv", prediction_table), ("model_leaderboard.csv", leader_table),
+                            ("two_stage_predictions.csv", stage_prediction_table), ("two_stage_metrics.csv", stage_metric_table)]:
         frame.to_csv(_path(out, filename), index=False)
     overview_rows = [[str(v["material"]) + ' · ' + _target_label(v), str(v.get("status") or '—'),
                       _percent(v.get("mae_skill")), _number(v.get("holdout_r2")),
@@ -451,6 +473,6 @@ header{padding:12px 0 26px}section{background:white;border:1px solid #d9e4ee;bor
 @media print{@page{size:landscape;margin:12mm}body{max-width:none;padding:0;background:white;font-size:10pt}section{border-radius:0;padding:10pt;margin:0 0 12pt;break-inside:auto}h1,h2,h3{break-after:avoid}.target{break-before:page}.charts{grid-template-columns:1fr 1fr;gap:16pt}.charts>div{break-inside:avoid}svg{max-height:155mm}table{font-size:8pt;table-layout:fixed}th,td{padding:5pt}thead{display:table-header-group}tr{break-inside:avoid}.table-wrap{overflow:visible}details>*{display:block}summary{display:none}nav{display:none}a{color:inherit;text-decoration:none}}
 </style></head><body><header><h1>Deduct predictability study</h1>
 <p>Observed family totals · grouped validation · climate and available covariates</p>
-<nav aria-label="Download complete results"><a href="target_summary.csv">Target summary CSV</a><a href="feature_importance.csv">Feature importance CSV</a><a href="model_leaderboard.csv">Model comparisons CSV</a><a href="predictions.csv">Predictions CSV</a></nav></header>'''
+<nav aria-label="Download complete results"><a href="target_summary.csv">Target summary CSV</a><a href="feature_importance.csv">Feature importance CSV</a><a href="model_leaderboard.csv">Model comparisons CSV</a><a href="predictions.csv">Predictions CSV</a><a href="two_stage_metrics.csv">Two-stage metrics CSV</a><a href="two_stage_predictions.csv">Two-stage components CSV</a></nav></header>'''
     html += main + '<footer>This report is self-contained and makes no network requests. Outputs remain in the private run directory.</footer></body></html>'
     _path(out, "dashboard.html").write_text(html, encoding="utf-8")

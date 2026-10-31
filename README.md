@@ -1,7 +1,7 @@
 # Pavement Analytics
 
 Generic Python tools for Pavement Condition Index (PCI), deduct values, and PAVER
-inspection exports. Version 0.5.5 provides a runnable curation and analysis
+inspection exports. Version 0.5.6 provides a runnable curation and analysis
 foundation. All operational inputs, configuration, provenance, fitted models,
 and results belong in a separate private workspace.
 
@@ -26,6 +26,8 @@ and results belong in a separate private workspace.
   with encoded feature schemas and actual/refit iteration counts in its audits.
 - Four additive spline settings use weighted Ridge fitting, univariate numeric
   curves, categorical terms and separate missing indicators in the base install.
+- Four occurrence/severity settings combine weighted logistic probabilities
+  with positive-only ExtraTrees means, with separate component diagnostics.
 - Immutable run outputs, file hashes and verified resume.
 - An SSH adapter that fetches an exact private data commit into an external workspace.
 - Publication checks for allowed files, Git history and private denylist matches.
@@ -75,8 +77,8 @@ pavement full "/path/to/private/data" --open
 ```
 
 This runs every original preparation stage and then compares end-inspection
-deduct-family totals using local baseline, ElasticNet, random-forest and
-ExtraTrees models.
+deduct-family totals using local baseline, ElasticNet, random-forest,
+ExtraTrees, additive spline and occurrence/severity models.
 Install the optional boosting backend to include its eight configurations
 automatically in `full` and `study`:
 
@@ -102,7 +104,15 @@ Additive spline regression needs no extra package. It is included automatically
 in observed-level `full` and `study` searches. Its unclipped margin is additive;
 saved predictions retain the nonnegative floor. This implementation uses
 scikit-learn B-splines and weighted Ridge, rather than a proprietary GAM backend.
-It retains the original inspection intervals and climate definitions, including
+
+Occurrence/severity regression also needs no extra package. Four settings pair
+logistic occurrence C 0.1/1.0 with positive-only ExtraTrees leaf sizes 2/10.
+Their point prediction is probability times expected positive magnitude, an
+overall conditional mean. MAE still selects the primary model; a zero median
+can win on zero-heavy targets. Private component CSVs and a separately saved
+within-family diagnostic model retain probability, severity and RMSE evidence.
+
+The full pipeline retains the original inspection intervals and climate definitions, including
 PG, cooling, rainflow and construction-aging calculations. The final offline
 dashboard ranks target predictability and shows the best predictors per family.
 `--open` opens a local progress page immediately and the final dashboard after

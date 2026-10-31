@@ -345,6 +345,41 @@ It adds 40 CV fits per five-fold target, plus selected refits. Closed-form Ridge
 fitting has no boosting iteration count; its training policy is recorded as
 `closed_form_weighted_ridge` with null iterations.
 
+Four base-install occurrence/severity candidates pair weighted logistic
+occurrence (C 0.1/1.0, lbfgs, tolerance 0.0001, at most 1,000 iterations) with
+positive-only ExtraTrees means (200 trees, depth 12, leaf size 2/10, one worker).
+Occurrence preprocessing learns from all current training rows; severity
+preprocessing learns only from positive training rows. Both stages receive
+their corresponding interval weights. Mixed-class classifier fitting needs
+at least five rows and two groups in each class. Severity fitting needs ten
+positive rows and two positive groups. Otherwise, training-weighted prevalence
+and positive means supply explicit fallbacks. No positives means zero prediction;
+all positives means probability one; a constant positive magnitude stays constant.
+The global development-constant task shortcut still evaluates the median alone.
+
+`predict_occurrence_severity(X)` returns `p_positive`, `positive_mean` and their
+product `prediction`, plus training-only constant references. The product
+estimates the overall conditional mean, without a probability threshold. It is
+not the mixture median and can lose MAE to a zero baseline. Primary selection
+continues to use mean development-fold MAE. Independently for each feature set,
+the best complete two-stage CV candidate is refitted on development data and
+saved as `two_stage_all_model.joblib` or `two_stage_nonclimate_model.joblib`,
+even when another family wins overall. Failed diagnostic refits remain visible
+and the next complete CV candidate is tried, without changing primary selection.
+
+Private `two_stage_predictions.csv` files retain component OOF rows for each
+attempted candidate and holdout rows for that one within-family diagnostic.
+`two_stage_metrics.csv` reports pooled saved-weight Brier score/skill, clipped
+log loss, trapezoidal PR-AUC, average precision, overall mean-prediction
+MAE/RMSE and positive-only severity errors. Single-class ranking metrics and
+errors without positive evaluation rows are undefined with explicit statuses.
+Mean RMSE skill uses each fitting partition's weighted overall mean baseline;
+Brier uses its weighted prevalence. These pooled metrics differ from the
+mean-fold MAE used for selection. The dashboard and consolidated CSVs include
+the diagnostics. They do not add per-family feature importance yet; comprehensive
+family comparisons and explanations remain R7. The four candidates add 40 CV
+fits per five-fold target, each containing up to two native fits, plus refits.
+
 Imputation, numeric scaling and
 categorical encoding are learned within training folds. Model selection uses
 cross-validation; the selected model is fitted on development groups only and

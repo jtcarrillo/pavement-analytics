@@ -11,6 +11,7 @@ import pandas as pd
 from sklearn.linear_model import ElasticNet
 
 from pavement_analytics.full_modeling import consolidate_full_models, run_full_models
+from pavement_analytics.original.common import Run
 from pavement_analytics.security import SafeError
 from pavement_analytics.study_modeling import _estimator, make_partitions, search_levels
 from temp_support import temporary_directory
@@ -190,6 +191,29 @@ class FullModelTests(unittest.TestCase):
         self.assertNotIn("DataRobot", html)
         self.assertFalse((model_out / "dashboard.html").exists())
         self.assertEqual(before, {p: hashlib.sha256(p.read_bytes()).hexdigest() for p in model_artifacts})
+
+    def test_component_report_exports_are_verified_on_full_run_resume(self):
+        with patch("pavement_analytics.study_modeling.candidates", linear_candidates):
+            run_full_models(self.pipeline, self.report, self.cfg)
+        checkpoint = self.root/"report-checkpoint"
+        run = Run(checkpoint, "generated-fingerprint", self.cfg, [])
+        report_out = checkpoint/"10_report"
+
+        def report_stage():
+            artifacts = consolidate_full_models(self.pipeline/"09_local_models", report_out=report_out)
+            return {}, artifacts
+
+        run.stage("10_report", report_stage)
+        recorded = {Path(item["path"]).name for item in run.data["stages"]["10_report"]["artifacts"]}
+        for name in ("two_stage_predictions.csv", "two_stage_metrics.csv"):
+            self.assertIn(name, recorded)
+            path = report_out/name
+            original = path.read_bytes()
+            path.write_bytes(original+b"\n")
+            with self.assertRaisesRegex(ValueError, "Checkpoint artifact changed or missing"):
+                Run(checkpoint, "generated-fingerprint", self.cfg, [], resume=True)
+            path.write_bytes(original)
+        Run(checkpoint, "generated-fingerprint", self.cfg, [], resume=True)
 
 
 class IntervalWeightTests(unittest.TestCase):
