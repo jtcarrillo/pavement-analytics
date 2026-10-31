@@ -232,6 +232,7 @@ are explicit. A failed stage is not reported as completed.
 | `08_model_backend` | Select the local engine and record retirement of the old service |
 | `09_local_models` | Separate local candidate searches, predictions, feature importance and climate ablation per target |
 | `10_report` | Consolidated offline dashboard, target rankings, scores, predictions and importance CSVs |
+| `11_qualification` | Verify completed-stage hashes, source inputs, shared groups, original targets/weights and reloaded model predictions; record pending release evidence |
 
 Curve fitting remains an original configuration choice: use a supplied private
 `deduct_curves` file, or enable `fit_deduct_curves`/`--fit-deduct-curves`; they
@@ -417,6 +418,10 @@ is not a sampling confidence interval. A many-target ranking is exploratory and
 needs confirmation on independent data.
 
 The final dashboard and consolidated CSVs are in `pipeline/10_report/`.
+The dashboard links to `pipeline/11_qualification/qualification.html`, which
+summarizes integrity and saved-model checks, target support, fitting platform,
+dependency versions, climate acquisition counts and remaining release gates.
+This final stage is automatic; no additional data-path argument is required.
 Separate model bundles, CV scores, full predictions and importance tables are
 in `pipeline/09_local_models/materials/<surface>/<target>/`. `target_map.csv`
 preserves the mapping from safe directory names to original target column names.

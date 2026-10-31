@@ -65,10 +65,14 @@ def verified_task(cache, key, build, destination, progress=None):
             progress({"event": "model", "status": "task_reused"})
         summary = read_json(ready/"summary.json")
     else:
+        from .pipeline import code_digest
+        code_before = code_digest()
         pending = Path(tempfile.mkdtemp(prefix=".pending-model-", dir=cache))
         work = pending/"result"
         try:
             summary = build(work)
+            if code_digest() != code_before:
+                raise SafeError("MODEL_TASK_CODE_CHANGED_DURING_BUILD")
             write_json(work/"task_manifest.json", {"schema_version": 1, "status": "complete", "key": key,
                                                   "outputs": _checksums(work)})
             work.rename(ready)

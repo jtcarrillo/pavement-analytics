@@ -121,6 +121,7 @@ class Run:
     """Checkpoints are trusted only when inputs, code, config, and outputs match."""
     def __init__(self, output, fingerprint, config, inputs, resume=False, progress=None):
         self.progress = progress
+        self.climate_evidence = {}
         self.boundary = Boundary.create(source_root(), Path(output))
         self.output = self.boundary.workspace
         self.output.mkdir(parents=True, exist_ok=True)
@@ -146,6 +147,10 @@ class Run:
                          "started_at": dt.datetime.now(dt.timezone.utc).isoformat(),
                          "config": config, "inputs": inputs, "stages": {}, "warnings": []}
         self.data["status"] = "running"
+        from ..pipeline import code_digest
+        import platform
+        self.data.setdefault("execution_environment", {"system": platform.system(), "machine": platform.machine(),
+            "python": platform.python_version(), "code_sha256": code_digest()})
         self.data.pop("error", None)
         self.data.pop("finished_at", None)
         self.current = "setup"
@@ -282,6 +287,7 @@ class Run:
         next_heartbeat = started + PROCESS_HEARTBEAT_SECONDS
         eof = False
         notices = []
+        climate_record = {"successful_downloads": 0, "requests": 0, "cache_hits": 0, "complete": False}
         try:
             while True:
                 try:
@@ -294,6 +300,12 @@ class Run:
                     self.log.flush()
                     event = parse_progress_line(value)
                     if event is not None:
+                        if event["phase"] == "downloaded":
+                            climate_record["successful_downloads"] += 1
+                        if event["phase"] == "complete":
+                            climate_record["complete"] = True
+                        for key in ("requests", "cache_hits"):
+                            climate_record[key] = max(climate_record[key], event.get(key, 0))
                         self.emit({**event, "stage": self.current})
                     if re.search(r"\[(WARN|ERROR)\]|^\s*!|warning:", value, re.I):
                         notices.append(value.strip())
@@ -317,6 +329,8 @@ class Run:
                                "idle_seconds": round(now - last_output, 3)})
                     next_heartbeat = now + PROCESS_HEARTBEAT_SECONDS
             code = process.wait()
+            climate_record["returncode"] = int(code)
+            self.climate_evidence.setdefault(self.current, []).append(climate_record)
         except BaseException:
             if process.poll() is None:
                 process.terminate()

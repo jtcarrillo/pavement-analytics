@@ -22,8 +22,8 @@ comparisons/explanations, process deadlines, progress and verified task checkpoi
 through R8 have equal weight for this count. This is accepted implementation
 coverage, not an estimate of elapsed engineering effort. Build publication,
 merge status and private deployment acceptance are reported separately.
-New algorithm families delivered: 5 of 5. The next build is R8, full-pipeline
-release qualification and private deployment acceptance.
+New algorithm families delivered: 5 of 5. Build 8 adds full-pipeline release
+qualification software; actual deployment/private acceptance remains open.
 
 ## Delivery sequence and dependencies
 
@@ -37,7 +37,7 @@ release qualification and private deployment acceptance.
 | R5 | Gaussian additive spline model | R1 | Additive shapes, weights and extrapolation checks pass | Complete — Build 5 |
 | R6 | Two-stage occurrence/severity model | R1 and one accepted severity estimator | Zero/positive/sparse training cases and prediction semantics pass | Complete — Build 6 |
 | R7 | Consolidated comparisons, explanations and runtime controls | R2–R6 | Every task reports candidates, failures, scores and importance consistently | Complete — Build 7 |
-| R8 | Full-pipeline release and private pilot | R7 | Existing workflow regression tests and private acceptance pass | Planned |
+| R8 | Full-pipeline release and private pilot | R7 | Existing workflow regression tests and private acceptance pass | Build 8 software; deployment/private acceptance pending |
 
 ExtraTrees comes first because it uses the existing scikit-learn dependency.
 XGBoost and LightGBM follow with explicit dependency and stopping rules. R5 can
@@ -971,6 +971,77 @@ This is invented model-stage data. Actual macOS execution, live ERA5 and
 private-data release acceptance remain R8. Hosted CI remains disabled.
 
 ## R8 — Release and real-data acceptance
+
+Build 8 software acceptance is frozen before measurement. No estimator grid,
+loss, target, feature or partition rule changes are introduced. Keep the three
+existing calibration seeds and final seed 20261031. The release command's
+offline smoke matrix covers all nine targets, three materials, mixed-input
+stress and five sparse/missing/constant edge cases, plus invalid weight,
+duplicate-ID and outcome/identity leakage guards. All installed candidates use
+the R7 comparison/worker path. Completed artifact predictions must reproduce
+within absolute/relative 1e-12, and no-signal explanations remain exploratory.
+Selected verification uses PCC standard `level_smooth` and PCC scale
+`level_zero_inflated`, with the fixed seven-family selectors from R7. Limits
+remain 300 seconds wall/process CPU per model task and a
+conservative 1,024 MiB parent-plus-worker peak sum on the recorded environment.
+Private full-run qualification checks stage/input/output integrity, shared
+groups, target/weight identities and actual saved predictions. Download
+receipts distinguish cache reuse from observed successful live acquisition.
+Mocked/synthetic execution and Linux results cannot satisfy the deployment Mac
+or private/live ERA5 evidence requirements. R8 stays open until those actual
+deployment/private checks are reviewed; writing release software is not itself
+the final gate.
+
+Build 8 adds `pavement qualify` for the offline matrix or a read-only audit of a
+completed full run. Normal `pavement full` adds stage `11_qualification` and a
+dashboard link automatically. Stage/input hashes, dependency/code fingerprints,
+shared identities, weights and reloaded holdout predictions are verified;
+climate acquisition receipts record cache reuse separately from successful
+live downloads. Output directories remain external and private, and a source
+change during task construction cannot publish a ready model-task cache.
+See [release qualification](deployment.md#release-qualification) for commands
+and deployment acceptance steps.
+
+The local repository suite passed 471 tests in 851.077 seconds. One additional
+full-pipeline integration check, added after suite collection, passed in 14.617
+seconds and verifies that empty configured materials retain explicit target
+tasks and zero live-download evidence. The restored original stages, automatic
+qualification and verified resume are exercised with invented inspections,
+private mathematical curve inputs and substituted weather acquisition; this
+does not constitute live CDS or private-data acceptance.
+
+The default offline smoke qualification completed all 45 material/target,
+edge and stress cases with all 33 catalog candidates installed. It reproduced
+1,806 completed candidate artifacts within absolute/relative 1e-12 and verified
+2,719 generated output hashes. Missing-label tasks retained explicit status;
+constant tasks used their baseline-only path. All four invalid weight,
+duplicate-ID, target-feature and identity-feature controls were rejected with
+their expected fixed error codes. There were no candidate/comparison failures.
+The largest observed task used 39.52 seconds wall, 55.31 seconds process CPU
+and a conservative 415.95 MiB parent/worker peak sum, below the frozen limits.
+These are generated model-stage results; they do not provide live weather,
+deployment Mac or private-pavement acceptance evidence. A targeted receipt
+test also verifies that incomplete/failed workers and cache-only workers cannot
+increase the successful-download count used by the full-run audit.
+
+The predeclared larger-population checks used the final seed and one fixed
+representative per regression family, plus the weighted-median baseline.
+Both used the isolated comparison path and reproduced all saved candidate
+predictions within absolute/relative 1e-12:
+
+| Population and target | PCC rows / shared groups | Saved models checked | Wall / process CPU seconds | Conservative peak sum MiB |
+|---|---:|---:|---:|---:|
+| Standard `level_smooth` | 1,440 / 60 | 16 | 35.10 / 39.47 | 416.32 |
+| Scale `level_zero_inflated` | 5,760 / 120 | 16 | 68.60 / 70.56 | 562.51 |
+
+These observations are from Linux x86_64 / Python 3.12.14, with NumPy 2.3.5,
+pandas 2.2.3, SciPy 1.17.0, scikit-learn 1.8.0, XGBoost 3.1.3, LightGBM 4.6.0,
+joblib 1.5.3 and threadpoolctl 3.6.0. Wall times were measured while independent
+regression and smoke checks also ran; they are environment observations, not
+universal throughput guarantees. CPU includes this process and its workers;
+peak sum adds parent/worker lifetime high-water marks conservatively. Hosted
+CI remains disabled. Actual deployment Mac, live ERA5 and private-data review
+remain pending.
 
 Run existing repository checks, the complete fixture case matrix and selected
 standard/scale runs. Record dependency versions and test OS/Python combinations,

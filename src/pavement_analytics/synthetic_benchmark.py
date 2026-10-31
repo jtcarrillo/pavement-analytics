@@ -316,7 +316,7 @@ def validate_bundle(path: Path) -> dict:
             "materials": table.material.value_counts().sort_index().to_dict()}
 
 
-def run_smoke(path: Path, output: Path, *, all_targets=False, all_materials=False, candidate_ids=None) -> list[dict]:
+def run_smoke(path: Path, output: Path, *, all_targets=False, all_materials=False, candidate_ids=None, model_options=None) -> list[dict]:
     """Exercise the installed candidate registry with fixed grouped partitions."""
     validate_bundle(path)
     source = _root(Path(path))
@@ -339,13 +339,15 @@ def run_smoke(path: Path, output: Path, *, all_targets=False, all_materials=Fals
             data = table.loc[table.material.eq(material)].copy()
             for target in targets:
                 summary = search_levels(data, FEATURES, target, material_path/target, partitions, CLIMATE_FEATURES,
-                                        seed=manifest["seed"], weight_column="delta_days", candidate_ids=candidate_ids)
+                                        seed=manifest["seed"], weight_column="delta_days", candidate_ids=candidate_ids,
+                                        model_options=model_options)
                 summaries.append({"material": material, **summary})
         _write_table(result, "target_summary.csv", pd.DataFrame(summaries))
         import sklearn
         write_json(result.output("benchmark_result.json"), {"synthetic": True, "bundle_sha256": sha256(source.path("bundle.json")),
                    "candidate_source": "pavement_analytics.study_modeling.candidates", "targets": targets,
                    "materials": list(materials), "requested_candidates": candidate_ids, "sklearn_version": sklearn.__version__,
+                   "model_options": model_options,
                    "note": "Results apply only to generated model-stage fixtures. They do not measure real pavement accuracy.",
                    "summaries": summaries})
     return summaries
@@ -365,6 +367,7 @@ def main(argv=None):
     smoke.add_argument("--output", type=Path, required=True)
     smoke.add_argument("--all-targets", action="store_true")
     smoke.add_argument("--all-materials", action="store_true")
+    smoke.add_argument("--compare", action="store_true", help="Enable R7 model-family comparisons and the bounded worker")
     smoke.add_argument("--candidate", action="append", dest="candidate_ids", help="Require an implemented candidate ID; repeat to compare a subset plus the median baseline")
     args = parser.parse_args(argv)
     try:
@@ -375,7 +378,7 @@ def main(argv=None):
             print(json.dumps(validate_bundle(args.workspace), sort_keys=True))
         else:
             summaries = run_smoke(args.workspace, args.output, all_targets=args.all_targets, all_materials=args.all_materials,
-                                  candidate_ids=args.candidate_ids)
+                                  candidate_ids=args.candidate_ids, model_options={} if args.compare else None)
             print(json.dumps({"status": "completed", "tasks": len(summaries)}))
     except (SafeError, ValueError, OSError, KeyError) as error:
         print(str(error) if isinstance(error, SafeError) else "SYNTHETIC_BENCHMARK_FAILED")

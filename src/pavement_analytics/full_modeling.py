@@ -246,7 +246,7 @@ def run_full_models(pipeline_out: Path, pipeline_report: dict, cfg: dict,
 
 def consolidate_full_models(out: Path, summaries: list[dict] | None = None,
                             audit: dict | None = None, report_out: Path | None = None, *,
-                            pipeline_report: dict | None = None) -> list[Path]:
+                            pipeline_report: dict | None = None, qualification_link: bool = False) -> list[Path]:
     """Build the report separately so its checkpoint does not rewrite model files."""
     out = Path(out)
     if summaries is None or audit is None:
@@ -261,6 +261,11 @@ def consolidate_full_models(out: Path, summaries: list[dict] | None = None,
         audit["stages"] = {key: value.get("status") for key, value in pipeline_report.get("stages", {}).items()}
     write_json(report_out / "report_audit.json", audit)
     build_study_report(report_out, summaries, audit, model_root=out)
+    if qualification_link:
+        dashboard = report_out/"dashboard.html"
+        html = dashboard.read_text(encoding="utf-8")
+        html = html.replace('<footer>', '<section><h2>Run qualification</h2><p><a href="../11_qualification/qualification.html">Open integrity, saved-model and deployment evidence</a>. Cached ERA5 and observed live downloads are reported separately.</p></section><footer>', 1)
+        dashboard.write_text(html, encoding="utf-8")
     return [report_out / "report_audit.json", *[report_out / name for name in (
         "dashboard.html", "target_summary.csv", "feature_importance.csv", "model_leaderboard.csv", "predictions.csv",
         "two_stage_predictions.csv", "two_stage_metrics.csv", "candidate_comparisons.csv", "family_summary.csv",

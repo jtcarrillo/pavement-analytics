@@ -376,17 +376,30 @@ def full(boundary: Boundary, data: Path | None = None, config_path: Path | None 
                 report_out.rename(failed / ("report-" + uuid.uuid4().hex[:8]))
             def report_stage():
                 artifacts = consolidate_full_models(models_out, saved["summaries"], saved["audit"], report_out=report_out,
-                                                    pipeline_report=run.data)
+                                                    pipeline_report=run.data, qualification_link=True)
                 return {"dashboard": str((report_out / "dashboard.html").relative_to(pipeline_out)),
                         "local_models": "completed", "model_backend": "local"}, artifacts
             run.stage(report_key, report_stage)
             _verify_setup(boundary)
+            qualification_out = pipeline_out/"11_qualification"
+            if run.data["stages"].get("11_qualification", {}).get("status") != "completed" and qualification_out.exists():
+                failed = boundary.output("failed")
+                failed.mkdir(exist_ok=True)
+                qualification_out.rename(failed/("qualification-"+uuid.uuid4().hex[:8]))
+            def qualification_stage():
+                from .run_qualification import audit_full_run
+                evidence, artifacts = audit_full_run(pipeline_out, run.data, cfg, _verify_setup(boundary), qualification_out,
+                                                    progress=progress)
+                return {"prediction_checks": evidence["prediction_checks"], "verified_artifacts": evidence["verified_artifacts"],
+                        "pending_release_gates": len(evidence["remaining_release_gates"])}, artifacts
+            run.stage("11_qualification", qualification_stage)
             write_json(boundary.output("full_config.json"), cfg)
             write_json(boundary.output("full_result.json"), {"status": "completed", "model_backend": "local",
                                                             "dashboard": str(report_out / "dashboard.html"),
+                                                            "qualification": str(qualification_out/"qualification.html"),
                                                             "run_report": str(run.path)})
             _notify(progress, "output", dashboard=str(report_out / "dashboard.html"),
-                    models=str(models_out), report=str(run.path))
+                    models=str(models_out), report=str(run.path), qualification=str(qualification_out/"qualification.html"))
             run.finish("completed_with_warnings" if run.data["warnings"] else "completed")
         except BaseException as error:
             run.finish("interrupted" if isinstance(error, KeyboardInterrupt) else "failed", str(error))

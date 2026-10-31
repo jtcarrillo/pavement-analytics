@@ -1,7 +1,7 @@
 # Pavement Analytics
 
 Generic Python tools for Pavement Condition Index (PCI), deduct values, and PAVER
-inspection exports. Version 0.5.7 provides a runnable curation and analysis
+inspection exports. Version 0.5.8 provides a runnable curation and analysis
 foundation. All operational inputs, configuration, provenance, fitted models,
 and results belong in a separate private workspace.
 
@@ -33,6 +33,8 @@ and results belong in a separate private workspace.
 - Model fit budgets, candidate/fold progress, process deadlines and verified
   completed-target checkpoints support bounded, interruptible model sweeps.
 - Immutable run outputs, file hashes and verified resume.
+- Automatic full-run qualification, saved-prediction checks and an offline
+  release matrix, with deployment and private-pilot evidence kept explicit.
 - An SSH adapter that fetches an exact private data commit into an external workspace.
 - Publication checks for allowed files, Git history and private denylist matches.
 
@@ -41,6 +43,12 @@ its complete ERA5 calculations, distress preparation, PCI reconstruction and
 Shapley decomposition, then runs our own local models for each deduct-family
 total. DataRobot is retired; no SDK, account, upload or external training service
 is required. See [the full pipeline guide](docs/full-pipeline.md).
+
+`full` finishes with an `11_qualification` report linked from the dashboard.
+To exercise the model release matrix without private data or weather access,
+run `pavement qualify --output "$HOME/pavement-runs/release-check" --open`.
+See [release qualification](docs/deployment.md#release-qualification) for
+completed-run audits and the remaining deployment acceptance requirements.
 
 The separate `study` command adds location matching, cached ERA5-Land enrichment, observed
 deduct-family totals, shared validation splits, climate ablation and feature

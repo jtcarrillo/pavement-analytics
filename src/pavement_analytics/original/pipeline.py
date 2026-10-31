@@ -418,8 +418,14 @@ class Pipeline:
         coverage_path = self.out / "04_climate" / f"{surface}_coverage.csv"
         write_csv(path, df)
         write_csv(coverage_path, missingness)
+        evidence = list(getattr(self.run, "climate_evidence", {}).get("04_climate_"+surface, []))
+        acquisition_path = self.out/"04_climate"/(surface+"_acquisition.json")
+        write_json(acquisition_path, {"schema_version": 1, "workers": evidence,
+            "successful_downloads": sum(v["successful_downloads"] for v in evidence if v.get("complete") and v.get("returncode") == 0),
+            "cache_hits": sum(v["cache_hits"] for v in evidence), "requests": sum(v["requests"] for v in evidence),
+            "note": "Only observed downloaded events from a successful completed worker count as live acquisition."})
         return {"rows": len(df), "enabled": True, "columns_added": len(added),
-                "rows_with_climate": int(coverage.sum())}, [path, coverage_path]
+                "rows_with_climate": int(coverage.sum()), "successful_downloads": sum(v["successful_downloads"] for v in evidence if v.get("complete") and v.get("returncode") == 0)}, [path, coverage_path, acquisition_path]
 
     def preserve_family_observability(self, df, surface):
         """A union-table blank is zero only when the source exported the family."""

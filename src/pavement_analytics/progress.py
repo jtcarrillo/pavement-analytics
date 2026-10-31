@@ -332,6 +332,6 @@ class FullProgress:
             return lines
         if kind == "output":
             return [f"  {label}: {_quoted(event[key])}" for key, label in
-                    (("dashboard", "Dashboard"), ("models", "Models"), ("report", "Run report"))
+                    (("dashboard", "Dashboard"), ("models", "Models"), ("report", "Run report"), ("qualification", "Qualification"))
                     if event.get(key) is not None]
         return []
