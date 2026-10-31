@@ -33,6 +33,16 @@ for platform-specific requirements. Actual macOS runtime qualification remains
 in the R8 release gate. The program records load failures privately and keeps
 base candidates usable; it does not install system dependencies itself.
 
+Additive spline regression uses the existing base scikit-learn dependency:
+
+```bash
+PYTHONPATH=src python -m unittest discover -s tests -p 'test_spline_model.py' -v
+```
+
+No GAM service, pyGAM package or native extension is added for this family.
+The four spline candidates join `full` and `study` automatically after updating
+the source. Existing resume rules require a new run for the changed code.
+
 ## Public repository
 
 Use a new dedicated code-only repository, or an existing repository only after

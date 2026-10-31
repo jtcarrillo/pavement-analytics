@@ -1,7 +1,7 @@
 # Pavement Analytics
 
 Generic Python tools for Pavement Condition Index (PCI), deduct values, and PAVER
-inspection exports. Version 0.5.4 provides a runnable curation and analysis
+inspection exports. Version 0.5.5 provides a runnable curation and analysis
 foundation. All operational inputs, configuration, provenance, fitted models,
 and results belong in a separate private workspace.
 
@@ -24,6 +24,8 @@ and results belong in a separate private workspace.
   with CPU-only fitting and recorded iteration counts and stopping groups.
 - Optional LightGBM adds eight CPU settings through the same evaluation plan,
   with encoded feature schemas and actual/refit iteration counts in its audits.
+- Four additive spline settings use weighted Ridge fitting, univariate numeric
+  curves, categorical terms and separate missing indicators in the base install.
 - Immutable run outputs, file hashes and verified resume.
 - An SSH adapter that fetches an exact private data commit into an external workspace.
 - Publication checks for allowed files, Git history and private denylist matches.
@@ -95,6 +97,11 @@ python -m pip install -e '.[original,xgboost,lightgbm]'
 
 LightGBM is bounded to `>=4.6.0,<4.7`, with 4.6.0 used for admission. See
 [deployment instructions](docs/deployment.md) for its installation checks.
+
+Additive spline regression needs no extra package. It is included automatically
+in observed-level `full` and `study` searches. Its unclipped margin is additive;
+saved predictions retain the nonnegative floor. This implementation uses
+scikit-learn B-splines and weighted Ridge, rather than a proprietary GAM backend.
 It retains the original inspection intervals and climate definitions, including
 PG, cooling, rainflow and construction-aging calculations. The final offline
 dashboard ranks target predictability and shows the best predictors per family.

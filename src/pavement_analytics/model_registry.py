@@ -18,7 +18,7 @@ from packaging.version import InvalidVersion, Version
 from .security import SafeError
 
 
-REGISTRY_VERSION = 4
+REGISTRY_VERSION = 5
 XGBOOST_MIN_VERSION, XGBOOST_MAX_VERSION = "3.1.3", "3.2"
 LIGHTGBM_MIN_VERSION, LIGHTGBM_MAX_VERSION = "4.6.0", "4.7"
 BASELINE_ID = "median"
@@ -75,6 +75,11 @@ def _lightgbm(parameters):
     rounds = parameters.pop("early_stopping_rounds")
     fraction = parameters.pop("stopping_fraction")
     return GroupedLightGBMRegressor(parameters, rounds, fraction)
+
+
+def _additive_spline(parameters):
+    from .spline_model import AdditiveSplineRegressor
+    return AdditiveSplineRegressor(**parameters)
 
 
 @dataclass(frozen=True)
@@ -165,6 +170,11 @@ def candidate_specs(seed: int = 42):
            _lightgbm, required_package="lightgbm", import_name="lightgbm",
            minimum_version=LIGHTGBM_MIN_VERSION, maximum_version=LIGHTGBM_MAX_VERSION)
           for stopping in (False, True) for leaves in (15, 31) for minimum in (10, 30)),
+        *(CandidateSpec(f"spline_knots{knots}_alpha{alpha}", "additive_spline",
+           {"n_knots": knots, "degree": 3, "alpha": alpha, "extrapolation": "constant",
+            "knots": "uniform", "solver": "cholesky"}, _additive_spline,
+           prediction_meaning="nonnegative clipped additive Gaussian point estimate")
+          for knots in (5, 8) for alpha in (0.1, 1.0)),
     )
 
 

@@ -61,6 +61,7 @@ src/pavement_analytics/progress.py
 src/pavement_analytics/ranking.py
 src/pavement_analytics/reporting.py
 src/pavement_analytics/security.py
+src/pavement_analytics/spline_model.py
 src/pavement_analytics/study.py
 src/pavement_analytics/study_modeling.py
 src/pavement_analytics/synthetic_benchmark.py
@@ -105,6 +106,7 @@ tests/test_temp_support.py
 tests/test_ungraded_deducts.py
 tests/test_xgboost.py
 tests/test_lightgbm.py
+tests/test_spline_model.py
 tools/check_public_tree.py
 tools/install_hooks.py
 tools/make_synthetic_example.py

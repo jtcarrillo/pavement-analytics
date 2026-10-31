@@ -178,6 +178,12 @@ this same grouped stopping policy and group-balanced weights, with the existing
 encoded feature path. Private audits retain encoded feature order and category
 mappings, plus actual and requested fitting iterations. LightGBM's supported
 range is `>=4.6.0,<4.7`.
+Four base-install additive spline configurations use 5/8 uniform knots, cubic
+numeric bases, weighted Ridge alpha 0.1/1.0 and constant extrapolation.
+Categorical features use additive one-hot terms; missing indicators remain
+linear. Learned feature roles, medians, knots and category mappings are fitted
+only on training rows. The saved model exposes private pre-clipping feature
+components, which are predictive associations and not unique causal effects.
 Imputation, scaling and categorical encoding
 are fitted within each training fold. CV selects the model; the selected model
 is fitted on development groups only. The saved model never trains on holdout.
