@@ -13,6 +13,26 @@ load failures are retained in candidate audits and model comparisons; explicitly
 requested unusable candidates fail preflight. Dependency changes invalidate
 full-run resume fingerprints. Validate the installation on the deployment OS.
 
+Install LightGBM independently, or alongside XGBoost:
+
+```bash
+python -m pip install -e '.[original,lightgbm]'
+# Both boosting backends:
+python -m pip install -e '.[original,xgboost,lightgbm]'
+PYTHONPATH=src python -m unittest discover -s tests -p 'test_lightgbm.py' -v
+```
+
+Use LightGBM `>=4.6.0,<4.7`; admission uses 4.6.0. Its Linux CPU runtime was
+tested, and pip wheel resolution was checked for macOS 12+ ARM64 with Python
+3.12. A downloaded wheel does not establish successful native loading or
+fitting on macOS: run the command above in the deployment environment. If
+native loading reports missing `libomp.dylib`, supply the OpenMP runtime; for
+Homebrew installations, `brew install libomp` provides it. Follow the
+[upstream installation guide](https://lightgbm.readthedocs.io/en/v4.6.0/Installation-Guide.html)
+for platform-specific requirements. Actual macOS runtime qualification remains
+in the R8 release gate. The program records load failures privately and keeps
+base candidates usable; it does not install system dependencies itself.
+
 ## Public repository
 
 Use a new dedicated code-only repository, or an existing repository only after

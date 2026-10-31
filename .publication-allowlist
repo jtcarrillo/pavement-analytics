@@ -26,6 +26,7 @@ src/pavement_analytics/boosting.py
 src/pavement_analytics/cli.py
 src/pavement_analytics/climate_progress.py
 src/pavement_analytics/live_progress.py
+src/pavement_analytics/lightgbm_model.py
 src/pavement_analytics/monitor.py
 src/pavement_analytics/climate.py
 src/pavement_analytics/curation.py
@@ -103,6 +104,7 @@ tests/test_study_reporting.py
 tests/test_temp_support.py
 tests/test_ungraded_deducts.py
 tests/test_xgboost.py
+tests/test_lightgbm.py
 tools/check_public_tree.py
 tools/install_hooks.py
 tools/make_synthetic_example.py

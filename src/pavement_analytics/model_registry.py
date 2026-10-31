@@ -18,8 +18,9 @@ from packaging.version import InvalidVersion, Version
 from .security import SafeError
 
 
-REGISTRY_VERSION = 3
+REGISTRY_VERSION = 4
 XGBOOST_MIN_VERSION, XGBOOST_MAX_VERSION = "3.1.3", "3.2"
+LIGHTGBM_MIN_VERSION, LIGHTGBM_MAX_VERSION = "4.6.0", "4.7"
 BASELINE_ID = "median"
 ID_PATTERN = re.compile(r"[A-Za-z][A-Za-z0-9_.-]{0,79}")
 
@@ -65,6 +66,15 @@ def dependency_version(package, minimum=None, maximum=None):
     except InvalidVersion:
         supported = False
     return installed, supported
+
+
+def _lightgbm(parameters):
+    from .lightgbm_model import GroupedLightGBMRegressor, require_lightgbm
+    require_lightgbm()
+    parameters = parameters.copy()
+    rounds = parameters.pop("early_stopping_rounds")
+    fraction = parameters.pop("stopping_fraction")
+    return GroupedLightGBMRegressor(parameters, rounds, fraction)
 
 
 @dataclass(frozen=True)
@@ -145,6 +155,16 @@ def candidate_specs(seed: int = 42):
            _xgboost, required_package="xgboost", import_name="xgboost",
            minimum_version=XGBOOST_MIN_VERSION, maximum_version=XGBOOST_MAX_VERSION)
           for stopping in (False, True) for depth in (3, 6) for rate in (0.05, 0.1)),
+        *(CandidateSpec(f"lgbm_leaves{leaves}_min{minimum}{'_es' if stopping else ''}", "lightgbm",
+           {"n_estimators": 300, "num_leaves": leaves, "min_child_samples": minimum,
+            "max_depth": -1, "learning_rate": 0.05, "objective": "regression", "metric": "l1",
+            "boosting_type": "gbdt", "device_type": "cpu", "n_jobs": 1,
+            "deterministic": True, "force_col_wise": True, "subsample": 1.0,
+            "colsample_bytree": 1.0, "random_state": seed, "verbosity": -1,
+            "early_stopping_rounds": 20 if stopping else None, "stopping_fraction": 0.2},
+           _lightgbm, required_package="lightgbm", import_name="lightgbm",
+           minimum_version=LIGHTGBM_MIN_VERSION, maximum_version=LIGHTGBM_MAX_VERSION)
+          for stopping in (False, True) for leaves in (15, 31) for minimum in (10, 30)),
     )
 
 
@@ -211,7 +231,7 @@ def build_candidates(seed=42, requested=None, *, specs=None):
 
 def environment_versions():
     versions = {}
-    for package in ("numpy", "pandas", "scikit-learn", "scipy", "joblib", "openpyxl", "packaging", "xgboost"):
+    for package in ("numpy", "pandas", "scikit-learn", "scipy", "joblib", "openpyxl", "packaging", "xgboost", "lightgbm"):
         try:
             versions[package] = importlib.metadata.version(package)
         except importlib.metadata.PackageNotFoundError:
