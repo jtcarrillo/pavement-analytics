@@ -17,6 +17,7 @@ import pandas as pd
 from .common import ROOT, Run, clean_json, numeric_stats, read_table, sha256, write_csv, write_json
 from . import check_cli_paths
 from ..security import reject_links, refuse_public_execution
+from ..model_registry import environment_versions
 
 SURFACES = ("PCC", "APC", "AC_AAC_ACC")
 DEFAULTS = {
@@ -207,7 +208,8 @@ def discover(c):
     code = {str(p.relative_to(ROOT)): sha256(p) for p in sorted(ROOT.rglob("*.py")) if "tests" not in p.parts}
     # Retired-service preferences do not change local curation results.
     stable_cfg = {k: v for k, v in c.items() if k not in {"datarobot", "feature_impact", "fail_on_warning", "dr_mode", "dr_name_prefix", "retired_backend_request"}}
-    fingerprint = hashlib.sha256(json.dumps([stable_cfg, inputs, code], sort_keys=True).encode()).hexdigest()
+    runtime = {"python": sys.version.split()[0], **environment_versions()}
+    fingerprint = hashlib.sha256(json.dumps([stable_cfg, inputs, code, runtime], sort_keys=True).encode()).hexdigest()
     return files, mapping, inputs, fingerprint
 
 

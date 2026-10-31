@@ -22,6 +22,7 @@ SUMMARY_COLUMNS = [
     "nonclimate_candidate", "climate_added_skill", "importance_reliable",
     "constant_target_scope", "mostly_zero_target",
     "candidate_family", "candidate_registry_version", "candidate_failure_count", "candidate_unavailable_count",
+    "candidate_iterations",
 ]
 IMPORTANCE_COLUMNS = ["material", "target", "feature", "kind", "is_climate",
                       "importance_mean", "importance_std", "repeats", "reliable",
@@ -30,7 +31,8 @@ PREDICTION_COLUMNS = ["material", "target", "row_id", "group_id", "actual", "pre
                       "baseline_prediction", "nonclimate_prediction", "weight"]
 LEADER_COLUMNS = ["material", "target", "candidate", "feature_set", "cv_mae", "cv_mae_std",
                   "cv_rmse", "cv_wins_vs_baseline", "family", "candidate_status", "error_code",
-                  "folds_completed", "selected", "parameters"]
+                  "folds_completed", "selected", "parameters", "cv_iterations", "cv_training",
+                  "final_iterations", "final_training"]
 SCATTER_LIMIT = 600
 SPARSE_NONZERO_THRESHOLD = .05
 

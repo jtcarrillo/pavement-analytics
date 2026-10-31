@@ -4,17 +4,18 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "pavement-analytics"
-version = "0.5.2"
+version = "0.5.3"
 description = "Generic tools for PCI, deduct values, and PAVER exports"
 requires-python = ">=3.11"
 dependencies = [
   "numpy>=2.0,<3", "pandas>=2.2,<3", "scipy>=1.14,<2",
-  "scikit-learn>=1.5,<2", "openpyxl>=3.1.5,<4"
+  "scikit-learn>=1.5,<2", "openpyxl>=3.1.5,<4", "packaging>=24,<27"
 ]
 
 [project.optional-dependencies]
 climate = ["cdsapi>=0.7.7,<1"]
 original = ["cdsapi>=0.7.7,<1", "pyarrow>=12"]
+xgboost = ["xgboost>=3.1.3,<3.2"]
 
 [project.scripts]
 pavement = "pavement_analytics.cli:main"

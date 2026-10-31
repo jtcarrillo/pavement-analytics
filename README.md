@@ -1,7 +1,7 @@
 # Pavement Analytics
 
 Generic Python tools for Pavement Condition Index (PCI), deduct values, and PAVER
-inspection exports. Version 0.5.2 provides a runnable curation and analysis
+inspection exports. Version 0.5.3 provides a runnable curation and analysis
 foundation. All operational inputs, configuration, provenance, fitted models,
 and results belong in a separate private workspace.
 
@@ -20,6 +20,8 @@ and results belong in a separate private workspace.
   condition-only baselines, ElasticNet and RandomForest candidates.
 - Observed deduct-level searches add four ExtraTrees settings through a
   versioned model registry, with weighted fitting and candidate failure audits.
+- Optional XGBoost adds four fixed-budget and four grouped-stopping settings,
+  with CPU-only fitting and recorded iteration counts and stopping groups.
 - Immutable run outputs, file hashes and verified resume.
 - An SSH adapter that fetches an exact private data commit into an external workspace.
 - Publication checks for allowed files, Git history and private denylist matches.
@@ -71,6 +73,17 @@ pavement full "/path/to/private/data" --open
 This runs every original preparation stage and then compares end-inspection
 deduct-family totals using local baseline, ElasticNet, random-forest and
 ExtraTrees models.
+Install the optional boosting backend to include its eight configurations
+automatically in `full` and `study`:
+
+```bash
+python -m pip install -e '.[original,xgboost]'
+```
+
+The supported XGBoost range is `>=3.1.3,<3.2`; admission was tested with 3.1.3.
+Absent or unsupported optional candidates remain visible in model comparisons
+while the base candidates continue. Dependency changes require a new run under
+the full-pipeline resume checks.
 It retains the original inspection intervals and climate definitions, including
 PG, cooling, rainflow and construction-aging calculations. The final offline
 dashboard ranks target predictability and shows the best predictors per family.

@@ -7,16 +7,17 @@ pavement surface. DataRobot's proprietary blueprints are not reproduced exactly.
 
 The observed-level search contains a weighted-median baseline, two Elastic
 Net, two Random Forest and four ExtraTrees configurations. R0 provides the
-reproducible dataset and benchmark runner. Build 1 completes R1 with a versioned
+reproducible dataset and benchmark runner. Installing the optional XGBoost
+extra adds eight configurations. Build 1 completes R1 with a versioned
 registry and common evaluation/failure contract. Build 2 completes R2 with
-ExtraTrees. **XGBoost, LightGBM, additive splines and two-stage models remain
-planned.**
+ExtraTrees; Build 3 completes R3 with fixed-budget and grouped-stopping XGBoost.
+**LightGBM, additive splines and two-stage models remain planned.**
 
-**Roadmap progress: 33.3% — 3 of 9 phase gates complete (R0, R1 and R2).** Phases R0
+**Roadmap progress: 44.4% — 4 of 9 phase gates complete (R0 through R3).** Phases R0
 through R8 have equal weight for this count. This is accepted implementation
 coverage, not an estimate of elapsed engineering effort. Build publication,
 merge status and private deployment acceptance are reported separately.
-New algorithm families delivered: 1 of 5. The next build is R3, XGBoost.
+New algorithm families delivered: 2 of 5. The next build is R4, LightGBM.
 
 ## Delivery sequence and dependencies
 
@@ -25,7 +26,7 @@ New algorithm families delivered: 1 of 5. The next build is R3, XGBoost.
 | R0 | Synthetic data, truth contracts and benchmark runner | Existing local search | Reproducible files, isolated groups and existing-model smoke run | Complete — test kit |
 | R1 | Candidate registry and common evaluation contract | R0 | Existing candidates retain their selection/prediction behavior | Complete — Build 1 |
 | R2 | ExtraTrees | R1 | Weighted fitting, mixed inputs, serialization and nonlinear fixtures pass | Complete — Build 2 |
-| R3 | XGBoost | R1, R2 evaluation pattern | Optional dependency and nested stopping tests pass | Planned |
+| R3 | XGBoost | R1, R2 evaluation pattern | Optional dependency and nested stopping tests pass | Complete — Build 3 |
 | R4 | LightGBM | R1, R3 stopping pattern | Weighted validation, category and platform checks pass | Planned |
 | R5 | Gaussian additive spline model | R1 | Additive shapes, weights and extrapolation checks pass | Planned |
 | R6 | Two-stage occurrence/severity model | R1 and one accepted severity estimator | Zero/positive/sparse training cases and prediction semantics pass | Planned |
@@ -268,19 +269,64 @@ macOS validation and private-pilot acceptance remain in R8. Hosted CI is disable
 
 ## R3 — XGBoost
 
-**Implementation.** Add an optional, explicitly version-bounded `xgboost` extra.
-Use the scikit-learn regressor adapter with a CPU histogram tree method and
-fixed seed/thread budget. Initial proposed grid: depth 3/6, learning rate
-0.05/0.1, and a fixed 300-tree budget. First land weighted fixed-budget training.
-Add early stopping only after the independent validation test is present.
+### Delivered in Build 3 (version 0.5.3)
 
-Early stopping uses a group-disjoint subset drawn from the current training
-fold. Fit preprocessing on its fitting portion only; transform the stopping
-portion without refitting and pass its matching weights. Outer CV test groups
-and final holdout groups are never stopping data. Refit development models
-using an iteration policy derived entirely from development data, and record
-the chosen count. Do not supply raw untransformed validation tables to a
-transformed training pipeline.
+The optional `xgboost` extra supplies these eight stable candidate IDs:
+
+| Fixed-budget ID | Grouped-stopping ID | Depth | Learning rate |
+|---|---|---|---|
+| `xgb_depth3_lr0.05` | `xgb_depth3_lr0.05_es` | 3 | 0.05 |
+| `xgb_depth3_lr0.1` | `xgb_depth3_lr0.1_es` | 3 | 0.1 |
+| `xgb_depth6_lr0.05` | `xgb_depth6_lr0.05_es` | 6 | 0.05 |
+| `xgb_depth6_lr0.1` | `xgb_depth6_lr0.1_es` | 6 | 0.1 |
+
+All use CPU histogram trees, squared-error fitting, MAE for stopping, a maximum
+of 300 rounds, one estimator worker, and full row/feature sampling. Stopped
+variants use patience 20 and a 20% group stopping fraction. The package range
+is `>=3.1.3,<3.2`, with prereleases rejected; admission uses 3.1.3. Installing
+the extra automatically includes supported candidates in `full` and `study`.
+Base installations retain their original eight learning configurations;
+unavailable/unsupported XGBoost candidates are recorded rather than silently
+discarded. Explicit required-candidate selection fails preflight if unusable.
+
+`GroupedXGBoostRegressor` receives group identities separately from predictor
+columns. Each stopped outer fit learns imputation/scaling/encoding only on its
+inner fitting groups, transforms its stopping groups with that same pipeline,
+and forwards the corresponding weights to both native fitting and evaluation.
+It then fits fresh preprocessing and a fixed-count model on the entire current
+training population using `best_iteration + 1`. Final development fitting uses
+this same nested policy. No outer-validation or holdout group participates in
+stopping. A stopped estimator called without grouping fails explicitly.
+
+Registry version 3 records fixed parameters and supported dependency bounds.
+Candidate audits and both task/consolidated leaderboards record actual CV/final
+iterations plus fitting, stopping and refit identities, rows and weight totals.
+Probe iterations are separate from the final model count. Saved models retain
+both all-feature and nonclimate final training details. These private identities
+are not displayed in dashboard HTML; old report inputs still load.
+
+Full-run fingerprints now include model dependency versions, including optional
+backend presence/version; the private run report records that environment.
+Installing or changing a backend therefore requires a new run. The original
+four-model and ExtraTrees definitions and the separate legacy rate grid are
+unchanged. Default winners and scores can change with the larger candidate pool.
+
+### Frozen acceptance protocol
+
+Build 3 acceptance is frozen before measurement. Keep R2's calibration seeds
+20261011/20261012/20261013 and verification seed 20261031 so comparisons share
+the same invented populations. Use four 300-round fixed configurations
+(depth 3/6, learning rate 0.05/0.1) and four matching stopped configurations
+(patience 20, stopping fraction 0.2), CPU histogram trees and one worker.
+Both the best fixed and best stopped configurations must reduce development
+CV MAE by at least 20% against the weighted median on threshold and interaction
+targets for every calibration seed. Do not tune on verification outcomes.
+Standard verification covers all nine PCC targets and stress inputs; direct
+checks cover every configuration even if it is never selected. The scale
+check fits all eight sequentially on scale PCC development rows. The resource
+budgets, declared before execution, are 180 seconds wall / process CPU per
+standard task or complete scale check, and 1,024 MiB peak process RSS on the
+recorded Linux environment. Real-data and macOS acceptance remain separate.
 
 **Tests.** Threshold/interaction/zero-heavy signals, weighted evaluation sets,
 missing inputs, deterministic CPU runs, transformed feature alignment,
@@ -289,6 +335,56 @@ holdout-label mutation invariant.
 
 **Gate.** Both fixed-budget and stopping configurations satisfy common contracts;
 the leaderboard records actual iterations and all stopping-group identities.
+
+### Acceptance evidence
+
+- All 386 local regression tests passed, including the original full-pipeline,
+  report, registry and ExtraTrees checks. Every fixed/stopped configuration
+  passes analytical weight forwarding, mixed/missing/unseen input handling,
+  deterministic repetition, cloning and serialization. The six calibration
+  seed/target cases passed the frozen CV gate independently for fixed and
+  stopped grids.
+- Native-fit interception verifies that the stopping table is transformed
+  with fitting-only preprocessing and receives its exact evaluation weights.
+  The weighted native stopping metric matches an independent MAE calculation.
+  Recorded groups exclude outer-validation and holdout populations. Changing
+  only holdout labels leaves selected candidates, CV scores, training audits
+  and predictions unchanged. A flat-signal check confirms that stopping can
+  shorten the final model to one round.
+- Missing and unsupported dependencies have distinct recorded statuses;
+  explicit unusable requests fail before creating outputs. Base searches
+  continue without XGBoost. Constant, missing-label and positive-only-holdout
+  controls terminate with explicit statuses. A dependency-presence change
+  invalidates an otherwise unchanged full-pipeline checkpoint.
+- Verification seed 20261031 completed all nine standard PCC targets and an
+  XGBoost-only stress search without candidate failures or unavailable models.
+  XGBoost was selected on smooth, threshold and interaction targets; ElasticNet
+  remained selected on linear/nonclimate targets, and the median on no-signal
+  and zero-heavy targets. The stopped XGBoost configuration was selected in the
+  family-only stress search. Every saved model reproduced saved predictions
+  within absolute/relative tolerance `1e-12`; direct configuration round trips
+  use absolute tolerance `1e-12`.
+- Standard tasks took at most 53.27 seconds wall / 63.31 seconds process CPU,
+  with 216.63 MiB peak process RSS. Stress took 18.70 seconds wall / 29.14
+  seconds CPU. The eight scale fits plus prediction/serialization checks took
+  5.24 seconds wall / 7.38 seconds CPU, with 250.50 MiB cumulative peak RSS.
+  All declared resource gates passed. Measurements used Linux x86_64,
+  Python 3.12.14, XGBoost 3.1.3, scikit-learn 1.8.0, NumPy 2.3.5, pandas 2.2.3,
+  SciPy 1.17.0 and packaging 26.3. Deployment macOS and real-data acceptance
+  remain in R8; hosted CI is disabled.
+
+Reproduce functional, boundary and calibration checks after installing the extra:
+
+```bash
+python -m pip install -e '.[xgboost]'
+PYTHONPATH=src python -m unittest discover -s tests -p 'test_xgboost.py' -v
+```
+
+The existing benchmark can isolate required configurations with, for example,
+`--candidate xgb_depth3_lr0.05 --candidate xgb_depth3_lr0.05_es`. Its shared
+weighted median remains present. Add `--all-targets` for the complete target
+sweep on an existing generated standard bundle. No benchmark outputs are
+stored in the source repository.
 
 ## R4 — LightGBM
 

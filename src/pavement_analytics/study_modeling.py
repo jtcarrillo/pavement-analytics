@@ -189,12 +189,26 @@ def _score(y, prediction, weights) -> dict:
             "r2": float(1 - mse / variance) if variance > 0 else None}
 
 
-def _fit(estimator, X, y, weights):
+def _fit(estimator, X, y, weights, groups=None):
     # A constant training fold has no learnable relation. This also avoids
     # meaningless coordinate-descent convergence warnings on a zero target.
     if np.ptp(y) == 0:
         return MedianRegressor().fit(X, y, sample_weight=weights)
-    return clone(estimator).fit(X, y, sample_weight=weights)
+    fitted = clone(estimator)
+    if callable(getattr(fitted, "fit_grouped", None)):
+        return fitted.fit_grouped(X, y, sample_weight=weights, groups=groups)
+    return fitted.fit(X, y, sample_weight=weights)
+
+
+def _training_details(fitted, estimator, groups):
+    details = getattr(fitted, "training_details_", None)
+    if details is not None:
+        return details
+    if isinstance(fitted, MedianRegressor) and callable(getattr(estimator, "fit_grouped", None)):
+        return {"iteration_policy": "constant_training_target", "iterations": 0,
+                "probe_iterations": 0, "fitting_groups": sorted(set(groups.astype(str))),
+                "stopping_groups": [], "refit_groups": sorted(set(groups.astype(str)))}
+    return None
 
 
 IMPORTANCE_COLUMNS = ["feature", "kind", "is_climate", "importance_mean", "importance_std",
@@ -204,7 +218,8 @@ PREDICTION_COLUMNS = ["row_id", "group_id", "actual", "prediction", "baseline_pr
 FOLD_COLUMNS = ["candidate", "feature_set", "fold", "mae", "rmse", "r2"]
 LEADERBOARD_COLUMNS = ["candidate", "feature_set", "cv_mae", "cv_mae_std", "cv_rmse",
                        "cv_wins_vs_baseline", "family", "candidate_status", "error_code",
-                       "folds_completed", "selected", "parameters"]
+                       "folds_completed", "selected", "parameters", "cv_iterations",
+                       "cv_training", "final_iterations", "final_training"]
 
 
 def _write_empty(out, summary):
@@ -251,7 +266,8 @@ def _evaluate_candidates(development, heldout, columns, target, feature_set,
                    and (requested is None or entry["candidate"] in requested)]
         diagnostics = {}
     entries = [dict(metadata_for("median", seed), candidate_status="ready", error_code=None), *entries]
-    attempts = {entry["candidate"]: dict(entry, feature_set=feature_set, folds_completed=0, selected=False) for entry in entries}
+    attempts = {entry["candidate"]: dict(entry, feature_set=feature_set, folds_completed=0, selected=False,
+                                        cv_training=[], final_training=None) for entry in entries}
     for name, diagnostic in diagnostics.items():
         with (out / "candidate_errors.log").open("a", encoding="utf-8") as stream:
             stream.write(f"{name} / {feature_set} / MODEL_CONSTRUCTION_FAILED\n{diagnostic}\n")
@@ -265,7 +281,11 @@ def _evaluate_candidates(development, heldout, columns, target, feature_set,
             if attempt["candidate_status"] != "ready":
                 continue
             try:
-                fitted = _fit(estimator, development.loc[train, columns], y[train], train_weights)
+                fitted = _fit(estimator, development.loc[train, columns], y[train], train_weights,
+                              development.loc[train, "group_id"])
+                details = _training_details(fitted, estimator, development.loc[train, "group_id"])
+                if details is not None:
+                    attempt["cv_training"].append(dict(fold=fold, **details))
             except Exception:
                 if name == "median":
                     raise
@@ -292,7 +312,10 @@ def _evaluate_candidates(development, heldout, columns, target, feature_set,
     for name, attempt in attempts.items():
         row = {"candidate": name, "feature_set": feature_set, "family": attempt["family"],
                "cv_mae": None, "cv_mae_std": None, "cv_rmse": None, "cv_wins_vs_baseline": None,
-               "parameters": json.dumps(attempt["parameters"], sort_keys=True), "folds_completed": attempt["folds_completed"]}
+               "parameters": json.dumps(attempt["parameters"], sort_keys=True), "folds_completed": attempt["folds_completed"],
+               "cv_iterations": json.dumps([fit["iterations"] for fit in attempt["cv_training"]]),
+               "cv_training": json.dumps(attempt["cv_training"], sort_keys=True),
+               "final_iterations": None, "final_training": None}
         if attempt["candidate_status"] == "ready" and attempt["folds_completed"] == planned_folds:
             attempt["candidate_status"] = "completed"
             block = scores.loc[scores.candidate.eq(name)].sort_values("fold")
@@ -308,7 +331,12 @@ def _evaluate_candidates(development, heldout, columns, target, feature_set,
     for best in eligible:
         name = best["candidate"]
         try:
-            fitted = _fit(estimators[name], development[columns], y, _weights(development, weight_column))
+            fitted = _fit(estimators[name], development[columns], y, _weights(development, weight_column),
+                          development.group_id)
+            details = _training_details(fitted, estimators[name], development.group_id)
+            attempts[name]["final_training"] = details
+            if details is not None:
+                best.update(final_iterations=details["iterations"], final_training=json.dumps(details, sort_keys=True))
         except Exception:
             if name == "median":
                 raise
@@ -450,6 +478,7 @@ def search_levels(table: pd.DataFrame, features: list[str], target: str, out: Pa
     summary.update(status="constant_target" if constant else ("baseline_selected" if best["candidate"] == "median" else "modeled"),
                    candidate=best["candidate"], cv_mae=best["cv_mae"], cv_mae_std=best["cv_mae_std"],
                    candidate_family=best["family"], candidate_parameters=json.loads(best["parameters"]),
+                   candidate_iterations=best.get("final_iterations"),
                    candidate_failure_count=sum(a["candidate_status"].startswith("failed_") for a in attempts),
                    candidate_unavailable_count=sum(a["candidate_status"] in {"unavailable", "unsupported"} for a in attempts),
                    holdout_mae=measured["mae"], holdout_rmse=measured["rmse"], holdout_r2=measured["r2"],
@@ -492,6 +521,8 @@ def search_levels(table: pd.DataFrame, features: list[str], target: str, out: Pa
     predictions.to_csv(out / "holdout_predictions.csv", index=False)
     joblib.dump({"format_version": 1, "candidate_registry_version": REGISTRY_VERSION,
                  "candidate_family": best["family"], "candidate_parameters": json.loads(best["parameters"]),
+                 "training_details": getattr(fitted, "training_details_", None),
+                 "nonclimate_training_details": getattr(nonclimate_fitted, "training_details_", None),
                  "environment": environment_versions(), "target": target, "features": features,
                  "climate_features": climate_features, "candidate": best["candidate"],
                  "estimator": fitted, "baseline_estimator": baseline_fitted,

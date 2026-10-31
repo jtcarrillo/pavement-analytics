@@ -130,7 +130,7 @@ class Run:
                 raise ValueError("--resume requires an existing run_report.json")
             self.data = json.loads(self.path.read_text(encoding="utf-8"))
             if self.data.get("fingerprint") != fingerprint:
-                raise ValueError("Inputs, code, or settings changed. Choose a new output directory; this checkpoint cannot be reused.")
+                raise ValueError("Inputs, code, settings, or dependencies changed. Choose a new output directory; this checkpoint cannot be reused.")
             for key, step in self.data["stages"].items():
                 if step["status"] in {"completed", "skipped"}:
                     for item in step["artifacts"]:
@@ -140,7 +140,9 @@ class Run:
         else:
             if any(self.output.iterdir()):
                 raise ValueError("Output directory is not empty. Use --resume for the same run or choose a new directory.")
+            from ..model_registry import environment_versions
             self.data = {"schema_version": 1, "fingerprint": fingerprint,
+                         "model_environment": environment_versions(),
                          "started_at": dt.datetime.now(dt.timezone.utc).isoformat(),
                          "config": config, "inputs": inputs, "stages": {}, "warnings": []}
         self.data["status"] = "running"
