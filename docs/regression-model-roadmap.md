@@ -15,14 +15,15 @@ ExtraTrees; Build 3 completes R3 with fixed-budget and grouped-stopping XGBoost.
 Build 4 completes R4 with encoded, weighted LightGBM and native grouped stopping.
 Build 5 completes R5 with weighted additive spline regression.
 Build 6 completes R6 with weighted occurrence/positive-severity regression and
-separate component diagnostics.
+separate component diagnostics. Build 7 completes R7 with comprehensive model-family
+comparisons/explanations, process deadlines, progress and verified task checkpoints.
 
-**Roadmap progress: 77.8% — 7 of 9 phase gates complete (R0 through R6).** Phases R0
+**Roadmap progress: 88.9% — 8 of 9 phase gates complete (R0 through R7).** Phases R0
 through R8 have equal weight for this count. This is accepted implementation
 coverage, not an estimate of elapsed engineering effort. Build publication,
 merge status and private deployment acceptance are reported separately.
-New algorithm families delivered: 5 of 5. The next build is R7, consolidated
-family comparisons, explanations and runtime controls.
+New algorithm families delivered: 5 of 5. The next build is R8, full-pipeline
+release qualification and private deployment acceptance.
 
 ## Delivery sequence and dependencies
 
@@ -35,7 +36,7 @@ family comparisons, explanations and runtime controls.
 | R4 | LightGBM | R1, R3 stopping pattern | Weighted validation, encoded category and installation diagnostics pass | Complete — Build 4 |
 | R5 | Gaussian additive spline model | R1 | Additive shapes, weights and extrapolation checks pass | Complete — Build 5 |
 | R6 | Two-stage occurrence/severity model | R1 and one accepted severity estimator | Zero/positive/sparse training cases and prediction semantics pass | Complete — Build 6 |
-| R7 | Consolidated comparisons, explanations and runtime controls | R2–R6 | Every task reports candidates, failures, scores and importance consistently | Planned |
+| R7 | Consolidated comparisons, explanations and runtime controls | R2–R6 | Every task reports candidates, failures, scores and importance consistently | Complete — Build 7 |
 | R8 | Full-pipeline release and private pilot | R7 | Existing workflow regression tests and private acceptance pass | Planned |
 
 ExtraTrees comes first because it uses the existing scikit-learn dependency.
@@ -691,7 +692,7 @@ MAE. PR metrics are undefined for single-class evaluation, and severity errors
 are undefined without positive evaluation rows. Partial CV attempts are labeled
 and cannot enter selection. The offline dashboard explains the mean semantics
 and shows the within-family diagnostic without changing primary importance.
-Full family comparisons, component importance and runtime controls remain R7.
+R7 below adds family comparisons, component importance and runtime controls.
 
 ### Frozen acceptance protocol
 
@@ -818,6 +819,65 @@ runtime controls are next in R7.
 
 ## R7 — Comparisons, explanation and bounded execution
 
+### Delivered in Build 7 (version 0.5.7)
+
+Observed-level full/study runs enable the comparison/runtime path by default.
+Each completed CV candidate receives a development-fitted artifact, a reload
+prediction check and weighted holdout evaluation. New candidate comparison,
+prediction, family summary, importance and timing sidecars retain all attempts
+and consolidate into the offline report. Family representatives use the lowest
+complete development-CV MAE independently for all/nonclimate features. Holdout
+scores never choose the representative. The primary model/metrics and legacy
+in-process library path remain compatible.
+
+Family explanations use saved fitted pipelines, the original evaluation
+weights, five permutations, the whole climate block and training-only numeric
+Spearman blocks at absolute correlation at least 0.8. Two-stage explanations
+also measure occurrence Brier loss and positive-only severity MAE. Heuristic
+support flags are labeled exploratory; permutation SD is not a confidence
+interval. Constant and unsupported families retain explicit statuses. Failed
+refits and failed/timed-out explanations are visible without fabricated scores.
+
+The default worker uses spawn and one native thread, with configurable
+fit/prediction deadlines. Timed-out operations terminate the worker; later work
+can start a fresh one. Native diagnostics stay private. Budgets include worst-case
+refits and native stopping/two-stage fits. Candidate/fold events show active
+work in the console and progress page. Ctrl+C cleans the worker and preserves
+completed task checkpoints. Complete tasks are content-keyed, checksum-verified
+and copied atomically into the final model stage; partial work is never reused.
+Keys cover data/plan/order/dtypes, target/features/weights, seed, registry/grid,
+options, source, Python/platform and dependencies. Full-stage fingerprint guards
+remain in place. Full resume reuses completed targets; study can share an
+external task cache across new workspaces. Study preprocessing resume is not
+introduced by this model-stage change.
+
+### Frozen acceptance protocol
+
+Build 7 acceptance is frozen before measurement. The estimator grids and primary
+mean-fold CV MAE rule remain unchanged. Functional checks use calibration seeds
+20261011/20261012/20261013 for shared-plan and old/new selection/prediction parity,
+without using holdout outcomes to choose family representatives or settings.
+Final seed 20261031 covers standard PCC threshold, zero-inflated and no-signal
+tasks with all 33 installed candidates, a seven-family stress search, and a
+scale search with one predeclared representative per learned family. Each saved
+candidate must reproduce its holdout predictions within absolute/relative
+`1e-12`. Every family must have separate all/nonclimate CV selections or an
+explicit failure/unavailability/constant status. Correlated blocks use training
+absolute Spearman at least 0.8; permutation importance uses five fixed repeats.
+No bootstrap confidence intervals or operational accuracy claims are added.
+Resource gates are 300 seconds wall/process CPU per complete standard/stress
+task or scale search, and 1,024 MiB for the sum of parent and peak worker RSS on
+the recorded Linux environment. Timeout/cancellation, worker restart, task-key
+invalidation, tampering, copy integrity and full/study setup/fingerprint checks
+must pass before marking R7 complete. Default full/study work uses one spawned
+worker, one native thread and 300-second fit/prediction deadlines.
+
+A separate controlled one-vs-two-task experiment uses the standard PCC linear
+and smooth targets with fixed ElasticNet/ExtraTrees selectors. It records wall,
+CPU and summed peak-memory costs for sequential versus concurrent independent
+tasks. This measures the tradeoff; concurrent fitting is not enabled in the
+released full/study runner. The default remains one worker per sequential task.
+
 Extend reports to show model family and parameters, candidate availability,
 failure status, fitting time, iterations, feature count, row/group coverage,
 CV and holdout scores, and baseline-relative skill. Preserve existing output
@@ -831,12 +891,11 @@ climate block and correlated-driver blocks. Raw permutation-repeat SD remains
 permutation variability, not sampling confidence. If bootstrap uncertainty is
 added, resample complete groups and state which comparisons it estimates.
 
-The runner currently selects the champion and computes its permutation
-importance. R1 supplies a required-candidate selector and candidate-level CV
-status records. R7 still adds comprehensive per-candidate prediction and
-serialization reports, so new families cannot escape direct acceptance tests
-merely by losing selection. The smoke command exercises implemented registry
-entries only.
+The runner preserves primary model selection and adds comprehensive
+per-candidate prediction/serialization reports. Losing selection does not hide
+a family from direct evaluation. The legacy smoke command still exercises
+installed registry entries; full/study and the R7 library options enable the
+complete comparison/runtime path.
 
 Precompute the fit budget as targets × surfaces × feature sets × outer folds
 × configurations, plus refits/stopping fits. Start with one fit worker and one
@@ -848,6 +907,68 @@ dependency versions. Preserve the original full-pipeline code-change guards.
 **Gate.** A model that raises or times out is visible in the result. Cancellation
 keeps completed artifacts intact. Old reports still load. Importance on no-signal
 and constant targets is not presented as reliable explanatory evidence.
+
+### Functional acceptance evidence
+
+- All 449 local regression tests passed in 859.245 seconds.
+  The 18 new comparison/runtime/checkpoint tests include three frozen calibration
+  seeds for old/new selection/prediction parity, independent family choices,
+  holdout-label mutation, weighted component importance, native fit/prediction
+  deadlines, worker restart, cancellation and checkpoint integrity/path guards.
+- Full integration preserves original stages, target masks, weights and groups.
+  An interrupted sweep fits only the unfinished target on retry. Full/study
+  options resolve and validate; changed model settings invalidate the original
+  fingerprint. New report CSVs participate in full checkpoint verification.
+  Old reports and earlier diagnostic labels remain readable.
+- Final verification completed three all-candidate standard tasks, a seven-family
+  stress search and scale search without candidate/comparison failures or
+  unavailable models. All 230
+  candidate artifacts reproduce holdout predictions within absolute/relative
+  tolerance 1e-12. Standard reports consolidate 198 candidate comparisons and
+  48 independent family/feature-set selections. Saved-model climate-block
+  importance is independently reconstructed using the original weights.
+- The no-signal control's primary importance remains unsupported.
+  31 family/component rows pass a
+  numerical support heuristic despite no planted signal. Small score gains
+  do not establish reliability: new exports explicitly name this flag
+  heuristic_support, and every explanation is labeled exploratory.
+  Estimator grids, loss rules and thresholds were not tuned to make the control
+  pass. Constant controls do not produce learned feature explanations.
+
+Measured Linux costs include refits, serialization, explanation and parity
+checks. Memory conservatively sums parent and peak child/worker RSS; peaks
+need not be simultaneous.
+
+| Search / target | Candidate comparisons | Family selections | Wall seconds | CPU seconds | Peak sum MiB |
+|---|---|---|---|---|---|
+| standard / level_threshold | 66 | 16 | 140.70 | 164.57 | 574.35 |
+| standard / level_zero_inflated | 66 | 16 | 103.65 | 114.46 | 648.23 |
+| standard / level_no_signal | 66 | 16 | 104.58 | 115.12 | 648.23 |
+| stress / level_zero_inflated | 16 | 16 | 34.61 | 37.41 | 648.23 |
+| scale / level_threshold | 16 | 16 | 77.94 | 81.21 | 648.23 |
+
+Every declared 300-second / 1,024-MiB resource gate passed. Each standard task
+records 396 worker fit calls against a conservative upper bound of 471; the
+seven-family searches record 96 against 115. Native stopping/two-stage fits
+have their own larger upper bound. Defaults use one worker/native thread.
+
+A separate fixed-selector experiment measured sequential independent tasks at
+23.60 seconds wall / 24.15
+summed operation CPU seconds and 286.76 MiB peak.
+Two concurrent tasks took 13.55 seconds wall /
+25.93 operation CPU seconds, with conservative
+572.94 MiB peak sum. Startup and memory costs differ;
+this is not a universal speedup claim. Concurrent fitting is not enabled in the
+released runner.
+
+Measurements used Linux x86_64, Python 3.12.14, scikit-learn 1.8.0, NumPy 2.3.5,
+pandas 2.2.3, SciPy 1.17.0, threadpoolctl 3.6.0, packaging 26.3, XGBoost 3.1.3
+and LightGBM 4.6.0. Functional checks can be reproduced with:
+
+    PYTHONPATH=src python -m unittest discover -s tests -p 'test_model_comparison.py' -v
+
+This is invented model-stage data. Actual macOS execution, live ERA5 and
+private-data release acceptance remain R8. Hosted CI remains disabled.
 
 ## R8 — Release and real-data acceptance
 

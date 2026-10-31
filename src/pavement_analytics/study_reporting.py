@@ -14,6 +14,9 @@ import pandas as pd
 
 from .security import SafeError, reject_links
 from .two_stage import STAGE_PREDICTION_COLUMNS, STAGE_METRIC_COLUMNS
+from .model_comparison import (COMPARISON_COLUMNS, FAMILY_COLUMNS,
+    PREDICTION_COLUMNS as CANDIDATE_PREDICTION_COLUMNS, IMPORTANCE_COLUMNS as FAMILY_IMPORTANCE_COLUMNS)
+from .model_runtime import TIMING_COLUMNS
 
 SUMMARY_COLUMNS = [
     "material", "target", "original_target", "status", "candidate", "cv_mae", "cv_mae_std",
@@ -24,6 +27,8 @@ SUMMARY_COLUMNS = [
     "constant_target_scope", "mostly_zero_target",
     "candidate_family", "candidate_registry_version", "candidate_failure_count", "candidate_unavailable_count",
     "candidate_iterations",
+    "comparison_failure_count", "comparison_completed_count",
+    "importance_status",
 ]
 IMPORTANCE_COLUMNS = ["material", "target", "feature", "kind", "is_climate",
                       "importance_mean", "importance_std", "repeats", "reliable",
@@ -314,6 +319,10 @@ def build_study_report(out: Path, summaries: list[dict], audit: dict,
         raise SafeError("REPORT_MODEL_DIRECTORY_REQUIRED")
     seen, records, importance_tables, prediction_tables, leader_tables, cards = set(), [], [], [], [], []
     stage_prediction_tables, stage_metric_tables = [], []
+    comparison_specs = {"candidate_comparisons.csv": COMPARISON_COLUMNS, "family_summary.csv": FAMILY_COLUMNS,
+        "candidate_predictions.csv": CANDIDATE_PREDICTION_COLUMNS, "family_importance.csv": FAMILY_IMPORTANCE_COLUMNS,
+        "model_runtime.csv": TIMING_COLUMNS}
+    comparison_tables = {name: [] for name in comparison_specs}
     for summary in summaries:
         material, target = str(summary.get("material", "")), str(summary.get("target", ""))
         if (not re.fullmatch(r"[A-Za-z0-9_-]+", material)
@@ -332,6 +341,12 @@ def build_study_report(out: Path, summaries: list[dict], audit: dict,
         leaders = _read(_path(root, "leaderboard.csv"))
         stage_predictions = _read(_path(root, "two_stage_predictions.csv"))
         stage_metrics = _read(_path(root, "two_stage_metrics.csv"))
+        task_comparisons = {name: _read(_path(root, name)) for name in comparison_specs}
+        for name, frame in task_comparisons.items():
+            if not frame.empty:
+                frame.insert(0, "target", target)
+                frame.insert(0, "material", material)
+                comparison_tables[name].append(frame)
         _metrics(row, predictions)
         records.append(row)
         for frame, collection in [(predictions, prediction_tables), (importance, importance_tables), (leaders, leader_tables),
@@ -355,6 +370,10 @@ def build_study_report(out: Path, summaries: list[dict], audit: dict,
             detail += ('<p class="notice">Candidate attempts with errors: ' + _number(failed, 0) +
                        '; unavailable or unsupported: ' + _number(unavailable, 0) +
                        '. See the model comparisons CSV for each status.</p>')
+        if _finite(row.get("comparison_failure_count")) and row["comparison_failure_count"] > 0:
+            detail += '<p class="notice">Comparison attempts with errors: ' + _number(row["comparison_failure_count"], 0) + '. See all candidate scores for statuses.</p>'
+        if row.get("importance_status") in {"failed", "timed_out"}:
+            detail += '<p class="notice">Primary feature explanation status: ' + _text(row["importance_status"]) + '.</p>'
         detail += _table(["MAE skill", "Holdout R²", "MAE", "Baseline MAE", "Holdout rows / groups"], [[
             _percent(row.get("mae_skill")), _number(row.get("holdout_r2")),
             _number(row.get("holdout_mae")), _number(row.get("baseline_mae")),
@@ -391,6 +410,30 @@ def build_study_report(out: Path, summaries: list[dict], audit: dict,
                     str(component.candidate), _number(component.mean_prediction_rmse),
                     _number(component.occurrence_brier), _number(component.occurrence_log_loss),
                     _number(component.positive_severity_rmse)]])
+        families = task_comparisons["family_summary.csv"]
+        if not families.empty:
+            detail += '<details><summary>Model-family comparisons and explanations</summary>'
+            detail += ('<p>Representatives are selected independently per family and feature set using development CV MAE. '
+                       'Holdout scores evaluate those choices. Importance is exploratory predictive reliance; '
+                       'repeat SD is permutation variability, not a confidence interval. Climate comparisons are not causal.</p>')
+            all_families = families.loc[families.feature_set.eq("all")]
+            detail += _table(["Family", "CV choice", "Status", "CV MAE", "Holdout MAE skill", "Climate added skill", "Explanation status"], [
+                [str(r.get("family", "")), str(r.get("candidate", "")), str(r.get("comparison_status", "")),
+                 _number(r.get("cv_mae")), _percent(r.get("mae_skill")), _percent(r.get("climate_added_skill")), str(r.get("importance_status", ""))]
+                for r in all_families.to_dict("records")])
+            family_importance = task_comparisons["family_importance.csv"]
+            if not family_importance.empty:
+                for family, values in family_importance.loc[family_importance.feature_set.eq("all")].groupby("family", sort=True):
+                    for metric, block in values.groupby("metric", sort=True):
+                        strongest = block.sort_values("importance_mean", ascending=False).head(8)
+                        detail += '<h3>' + _text(str(family)+' · '+str(metric)) + '</h3>'
+                        support_column = "heuristic_support" if "heuristic_support" in block else "reliable"
+                        if not block[support_column].map(_true).all():
+                            detail += '<p class="notice">Exploratory rankings: this score does not meet the support/improvement rule.</p>'
+                        detail += _table(["Predictor / block", "Columns", "Error increase", "Repeat SD"], [
+                            [str(r["feature"]), str(r["columns"]), _number(r["importance_mean"]), _number(r["importance_std"])]
+                            for r in strongest.to_dict("records")])
+            detail += '</details>'
         if not importance.empty and "kind" in importance:
             blocks = importance.loc[importance.kind.eq("climate_block")]
             if len(blocks):
@@ -424,6 +467,12 @@ def build_study_report(out: Path, summaries: list[dict], audit: dict,
                             ("predictions.csv", prediction_table), ("model_leaderboard.csv", leader_table),
                             ("two_stage_predictions.csv", stage_prediction_table), ("two_stage_metrics.csv", stage_metric_table)]:
         frame.to_csv(_path(out, filename), index=False)
+    for name, columns in comparison_specs.items():
+        tables = comparison_tables[name]
+        combined = pd.concat(tables, ignore_index=True) if tables else pd.DataFrame()
+        if name == "family_importance.csv" and "heuristic_support" not in combined and "reliable" in combined:
+            combined = combined.rename(columns={"reliable": "heuristic_support"})
+        combined.reindex(columns=["material", "target", *columns]).to_csv(_path(out, name), index=False)
     overview_rows = [[str(v["material"]) + ' · ' + _target_label(v), str(v.get("status") or '—'),
                       _percent(v.get("mae_skill")), _number(v.get("holdout_r2")),
                       _number(v.get("valid_target_rows"), 0) + ' / ' + _number(v.get("valid_target_groups"), 0),
@@ -473,6 +522,6 @@ header{padding:12px 0 26px}section{background:white;border:1px solid #d9e4ee;bor
 @media print{@page{size:landscape;margin:12mm}body{max-width:none;padding:0;background:white;font-size:10pt}section{border-radius:0;padding:10pt;margin:0 0 12pt;break-inside:auto}h1,h2,h3{break-after:avoid}.target{break-before:page}.charts{grid-template-columns:1fr 1fr;gap:16pt}.charts>div{break-inside:avoid}svg{max-height:155mm}table{font-size:8pt;table-layout:fixed}th,td{padding:5pt}thead{display:table-header-group}tr{break-inside:avoid}.table-wrap{overflow:visible}details>*{display:block}summary{display:none}nav{display:none}a{color:inherit;text-decoration:none}}
 </style></head><body><header><h1>Deduct predictability study</h1>
 <p>Observed family totals · grouped validation · climate and available covariates</p>
-<nav aria-label="Download complete results"><a href="target_summary.csv">Target summary CSV</a><a href="feature_importance.csv">Feature importance CSV</a><a href="model_leaderboard.csv">Model comparisons CSV</a><a href="predictions.csv">Predictions CSV</a><a href="two_stage_metrics.csv">Two-stage metrics CSV</a><a href="two_stage_predictions.csv">Two-stage components CSV</a></nav></header>'''
+<nav aria-label="Download complete results"><a href="target_summary.csv">Target summary CSV</a><a href="feature_importance.csv">Feature importance CSV</a><a href="model_leaderboard.csv">Model comparisons CSV</a><a href="predictions.csv">Predictions CSV</a><a href="family_summary.csv">Family comparisons CSV</a><a href="family_importance.csv">Family explanations CSV</a><a href="candidate_comparisons.csv">All candidate scores CSV</a><a href="candidate_predictions.csv">All candidate predictions CSV</a><a href="model_runtime.csv">Runtime CSV</a><a href="two_stage_metrics.csv">Two-stage metrics CSV</a><a href="two_stage_predictions.csv">Two-stage components CSV</a></nav></header>'''
     html += main + '<footer>This report is self-contained and makes no network requests. Outputs remain in the private run directory.</footer></body></html>'
     _path(out, "dashboard.html").write_text(html, encoding="utf-8")

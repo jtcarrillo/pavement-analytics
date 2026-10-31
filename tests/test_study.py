@@ -63,7 +63,8 @@ class StudyIntegrationTests(unittest.TestCase):
         self.assertIn("historic_temperature", features)
         self.assertNotIn("PCI", features)
         self.assertFalse(any("deduct" in f for f in features))
-        for name in ("dashboard.html", "target_summary.csv", "feature_importance.csv", "manifest.json"):
+        for name in ("dashboard.html", "target_summary.csv", "feature_importance.csv", "manifest.json",
+                     "candidate_comparisons.csv", "family_summary.csv", "family_importance.csv", "model_runtime.csv"):
             self.assertTrue((out / name).is_file(), name)
         self.assertEqual(json.loads((out / "study_status.json").read_text())["status"], "complete")
         self.assertFalse(json.loads((out / "study_audit.json").read_text())["partition"]["shared_climate_sites_joined"])
@@ -103,6 +104,19 @@ class StudyIntegrationTests(unittest.TestCase):
         self.options.write_text(json.dumps({"climte": {}}))
         with self.assertRaisesRegex(SafeError, "UNKNOWN_STUDY_OPTION"):
             resolve_options(self.data, self.public)
+
+    def test_local_model_options_have_private_relative_cache_and_validated_deadlines(self):
+        settings = json.loads(self.options.read_text())
+        settings["local_model_options"] = {"cache_dir": "model-cache", "prediction_timeout_seconds": 50.,
+                                           "candidate_ids": ["enet_0.01"]}
+        self.options.write_text(json.dumps(settings))
+        options, _ = resolve_options(self.data, self.public, self.options)
+        self.assertEqual(options["local_model_options"]["cache_dir"], str(self.data/"model-cache"))
+        self.assertEqual(options["local_model_options"]["prediction_timeout_seconds"], 50.)
+        settings["local_model_options"]["fit_timeout_seconds"] = -1
+        self.options.write_text(json.dumps(settings))
+        with self.assertRaisesRegex(SafeError, "INVALID_LOCAL_MODEL_OPTIONS"):
+            resolve_options(self.data, self.public, self.options)
 
     def test_null_optional_climate_paths_use_defaults(self):
         self.options.write_text(json.dumps({"climate": {"cache_dir": None, "csv_dir": None, "mapping": None}}))

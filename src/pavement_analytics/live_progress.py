@@ -149,6 +149,12 @@ class LiveProgress:
                 if _finite(event.get(key)):
                     self.state[key] = event[key]
             recognized = True
+        elif kind == "model":
+            from .model_runtime import model_progress_text
+            text = model_progress_text(event)
+            if text is not None:
+                self.state["phase"] = text
+                recognized = True
         elif kind == "target":
             name = _text(event.get("target"))
             material = event.get("material")

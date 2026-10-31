@@ -192,6 +192,12 @@ class FullProgress:
     @staticmethod
     def _render(event: dict) -> list[str]:
         kind = event.get("event")
+        if kind == "model":
+            from .model_runtime import model_progress_text
+            line = model_progress_text(event)
+            # Prediction operations are frequent; the browser retains them,
+            # while console/log milestones focus on fit work and exceptions.
+            return [line] if line and (event.get("operation") != "predict" or event.get("status") in {"timed_out", "failed", "cancelled"}) else []
         if kind == "progress_window":
             return [f"Progress window: {_quoted(event.get('path', ''))}"]
         if kind == "climate":

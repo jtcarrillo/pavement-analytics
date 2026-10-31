@@ -219,3 +219,29 @@ fixed codes. Consult the private `logs/progress.log` (full runs),
 
 Never paste private logs or records into a public issue. Create a generated
 reproduction with equivalent behavior.
+
+## Model comparison runtime
+
+Version 0.5.7 enables family comparisons and the isolated model worker in
+`full` and `study`. Install the updated base requirements; `threadpoolctl` is
+now explicit (`>=3.2,<4`, admission version 3.6.0), alongside the existing
+optional boosting extras. It limits native numerical threads in the spawned
+worker. Linux admission and the deployment macOS run remain distinct checks.
+
+```bash
+PYTHONPATH=src python -m unittest discover -s tests -p 'test_model_comparison.py' -v
+```
+
+The worker uses Python's spawn context rather than inheriting native fitting
+state through fork. Command-line entry points handle this automatically. A
+Python script calling the isolated library API must put its launch code under
+`if __name__ == "__main__":`. Keep `isolated: true` for hard fit/prediction
+deadlines; in-process debug mode does not enforce them. Ctrl+C terminates the
+active worker and preserves verified completed-target checkpoints. Do not run
+two writers against the same workspace/cache.
+
+For full-run cancellation, resume the same workspace using the existing
+`full --resume` workflow. Code/config/dependency changes still require a new
+full run. An unchanged external ERA5 cache can be reused. See
+[model runtime and task checkpoints](full-pipeline.md#model-runtime-and-task-checkpoints)
+for fit budgets, model options, private artifact definitions and cache integrity.
