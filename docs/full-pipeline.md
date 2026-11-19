@@ -6,6 +6,13 @@ DataRobot service with this package's local training, evaluation and reporting.
 The separate `study` command uses a different inspection-level population and
 lookback exposure contract; it is not required by `full`.
 
+## Version 0.6.1 numerical release notes
+
+Full runs exclude inspection intervals shorter than 365 days from both
+deterioration-rate and deduct-family modeling. The cutoff applies before
+allocating modeling rows to development folds and holdout. Use a new run to
+apply the cutoff to an existing dataset.
+
 ## Version 0.6.0 numerical release notes
 
 Version 0.6.0 adds `DetRatePerYear` to the standard full-run target sweep for
@@ -294,11 +301,13 @@ construction/increases; the rate task does not admit those excluded transitions.
 For example, PCI 80 to 70 over 730 days gives `-5` PCI points per year.
 More negative rates mean faster observed deterioration. Do not silently negate
 the target, take its absolute value, or interpret it as ending PCI.
-The original `full` profile defaults to `min_delta_days: 1`; its eligible
-population can therefore include one-day transitions. The separate `analyze`
-workflow's default 365-day minimum does not apply to `full`. Review the actual
-interval distribution: annualizing a PCI difference over a short interval can
-produce a large signed rate without a correspondingly large PCI-point change.
+Stage `07_modeling` applies a minimum of 365 days to both target types.
+A pair exactly 365 days apart meets this requirement. Profiles can set
+`min_delta_days` above 365. For an older profile with a positive minimum below
+365, the full setup report records the adjustment to 365. Rejected pairs are
+recorded in `pipeline/07_modeling/<surface>_rejected_rows.csv`. This filter
+runs after consecutive inspection pairs are formed, so dropping a short pair
+does not bridge to a different inspection.
 
 For each task, reported holdout errors use its saved positive interval weights,
 `w_i = delta_days_i`, on its eligible holdout rows. With observed target `y_i`
@@ -594,8 +603,9 @@ The complementary
 `pipeline/09_local_models/rate_interval_diagnostics.csv` reports the eligible
 rate population in ten rows per surface: development and holdout, each split
 into five duration bands. For whole-day inspection intervals these are one
-day, 2–29, 30–89, 90–364 and 365 or more days. To avoid imposing a new input
-restriction, the recorded labels also cover positive fractional durations:
+day, 2–29, 30–89, 90–364 and 365 or more days. The first four bands have zero
+eligible rows in full runs starting with version 0.6.1. The recorded labels
+also cover positive fractional durations:
 `<=1 day`, `>1 to <30 days`, `30 to <90 days`, `90 to <365 days`, and
 `365+ days`.
 
