@@ -23,6 +23,7 @@ FORMATS = {".csv", ".tsv", ".xlsx", ".xlsm"}
 CANONICAL = {"section": "SectionUniqueID", "date": "Date", "pci": "PCI",
              "surface": "Inspected Surface Type", "construction": "IsConstruction"}
 SETUP_KEYS = {"columns", "date_format", "blank_deducts"}
+FULL_MIN_INTERVAL_DAYS = 365
 
 
 def _notify(progress, event, **fields):
@@ -144,6 +145,7 @@ def prepare_full(boundary: Boundary, data: Path, config_path: Path | None = None
     if source_options.get("blank_deducts", "zero") != "zero":
         raise SafeError("ORIGINAL_PIPELINE_USES_ZERO_BLANK_DISTRESS_POLICY")
     cfg = copy.deepcopy(DEFAULTS)
+    cfg["min_delta_days"] = FULL_MIN_INTERVAL_DAYS
     cfg.update({k: v for k, v in source_options.items() if k in DEFAULTS})
     from .model_runtime import model_options
     cfg["local_model_options"] = model_options(cfg.get("local_model_options"))
@@ -182,6 +184,10 @@ def prepare_full(boundary: Boundary, data: Path, config_path: Path | None = None
     enforced = {"skip_climate": False, "skip_distress": False, "skip_pci": False, "no_shapley": False}
     overrides = {k: {"previous": cfg[k], "full": v} for k, v in enforced.items() if cfg[k] != v}
     cfg.update(enforced)
+    requested_minimum = cfg["min_delta_days"]
+    if type(requested_minimum) is int and 0 < requested_minimum < FULL_MIN_INTERVAL_DAYS:
+        cfg["min_delta_days"] = FULL_MIN_INTERVAL_DAYS
+        overrides["min_delta_days"] = {"previous": requested_minimum, "full": cfg["min_delta_days"]}
     cfg["include_pci_rate"] = source_options.get("include_pci_rate", True)
     cfg["target_mode"] = source_options.get("target_mode", "deduct_families")
     if cfg["target_mode"] != "deduct_families":

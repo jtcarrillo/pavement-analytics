@@ -310,6 +310,7 @@ class FullPipelineTests(unittest.TestCase):
         self.assertEqual(cfg["target_mode"], "deduct_families")
         self.assertTrue(cfg["include_pci_rate"])
         self.assertEqual(cfg["datarobot"], "off")
+        self.assertEqual(cfg["min_delta_days"], 365)
 
     def test_default_full_adds_signed_rate_for_every_surface_on_the_same_group_plan(self):
         self.settings.pop("targets")
@@ -318,6 +319,10 @@ class FullPipelineTests(unittest.TestCase):
         self.profile.write_text(json.dumps(self.settings))
         for path in self.raw.glob("*.csv"):
             source = pd.read_csv(path, dtype={"SectionUniqueID": str})
+            short = source.iloc[:2].copy()
+            short["SectionUniqueID"] = "short"
+            short.iloc[1, short.columns.get_loc("Date")] = "2019-12-31"
+            source = pd.concat([source, short], ignore_index=True)
             materials = []
             for surface in ("PCC", "APC", "AC"):
                 frame = source.copy()
@@ -332,6 +337,17 @@ class FullPipelineTests(unittest.TestCase):
         self.run_cli("--quiet")
         pipeline = self.work / "pipeline"
         self.assert_signed_rate_outputs(pipeline, self.settings["surfaces"])
+        predictions = pd.read_csv(pipeline / "10_report/predictions.csv")
+        self.assertTrue(predictions.weight.ge(365).all())
+        for surface in self.settings["surfaces"]:
+            with self.subTest(surface=surface):
+                eligible = pd.read_csv(pipeline / f"07_modeling/partitioned/{surface}.csv")
+                self.assertEqual(set(eligible.delta_days), {365, 366})
+                self.assertEqual(len(eligible), 40)
+                rejected = pd.read_csv(pipeline / f"07_modeling/{surface}_rejected_rows.csv")
+                self.assertEqual(len(rejected), 10)
+                self.assertTrue(rejected.delta_days.eq(364).all())
+                self.assertTrue(rejected.exclusion_reason.eq("invalid_interval").all())
         plan = pd.read_csv(pipeline / "07_modeling/partitions.csv")
         self.assertEqual(len(plan), 10)  # Same source/airfield groups across three surfaces.
         target_map = pd.read_csv(pipeline / "09_local_models/target_map.csv")
@@ -373,6 +389,19 @@ class FullPipelineTests(unittest.TestCase):
         with patch.dict(os.environ, {"PAVEMENT_PRIVATE_EXECUTION": "1", "GITHUB_ACTIONS": "false"}):
             config = prepare_full(boundary, self.raw, **options)
         return config, json.loads((self.work / "full_setup_report.json").read_text())
+
+    def test_full_enforces_one_year_minimum_in_private_profiles(self):
+        for requested, effective in ((1, 365), (400, 400)):
+            with self.subTest(requested=requested):
+                self.work = self.root / f"run-{requested}"
+                self.settings["min_delta_days"] = requested
+                config, report = self.prepare_setup()
+                self.assertEqual(config["min_delta_days"], effective)
+                adjustments = report["forced_stage_settings"]
+                if requested < effective:
+                    self.assertEqual(adjustments["min_delta_days"], {"previous": requested, "full": effective})
+                else:
+                    self.assertNotIn("min_delta_days", adjustments)
 
     def test_local_model_options_resolve_and_invalidate_the_original_fingerprint(self):
         self.settings["local_model_options"] = {"cache_dir": "model-cache", "candidate_ids": ["enet_0.01"],

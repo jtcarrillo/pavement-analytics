@@ -1,7 +1,7 @@
 # Pavement Analytics
 
 Generic Python tools for Pavement Condition Index (PCI), deduct values, and PAVER
-inspection exports. Version 0.6.0 provides a runnable curation and analysis
+inspection exports. Version 0.6.1 provides a runnable curation and analysis
 foundation. All operational inputs, configuration, provenance, fitted models,
 and results belong in a separate private workspace.
 
@@ -10,9 +10,9 @@ and results belong in a separate private workspace.
 - CSV, TSV and first-worksheet XLSX/XLSM ingestion; text identifiers remain text.
 - Guarded, auditable cell corrections without altering the source exports.
 - Surface classification, rejection accounting and consecutive inspection pairs.
-- Workflow-specific interval rules: the original `full` workflow defaults to a
-  one-day minimum; the separate `analyze` workflow defaults to 365 days.
-  Increases and construction reset pairing.
+- Full-run modeling requires at least 365 days between paired inspections.
+  The separate `analyze` workflow also defaults to 365 days. Increases and
+  construction reset pairing.
 - Deduct-family growth targets and missing/invalid deduct checks.
 - Curve-driven PCI calculations and an exact Shapley library function. Approved
   correction curves must be supplied privately; no standard tables are bundled.
@@ -165,7 +165,7 @@ add fitted models or operational results to an existing report.
 Rate-enabled runs save a per-surface, per-partition `rate_benchmark.csv` and
 stable pair identities in `row_map.csv` so comparisons can verify their rows,
 outcomes, weights, group folds and features. Missing identity evidence is
-explicit. See [the 0.6.0 numerical release notes](docs/full-pipeline.md#version-060-numerical-release-notes).
+explicit. See [the numerical release notes](docs/full-pipeline.md#version-061-numerical-release-notes).
 
 The full pipeline retains the original inspection intervals and climate definitions, including
 PG, cooling, rainflow and construction-aging calculations. The final offline
