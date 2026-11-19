@@ -131,6 +131,42 @@ class OriginalPipelineRegressionTests(unittest.TestCase):
             "tdv_start": [5, 10, 15, 20], "maxcdv_start": [5, 10, 15, 20],
         })
 
+    def test_pci_only_exports_remain_rate_targets_without_distress_gap_fields(self):
+        source = self.raw / "pci_only.csv"
+        pd.DataFrame([
+            {"SectionUniqueID": surface + "-01", "Date": date, "PCI": pci,
+             "Inspected Surface Type": surface, "IsConstruction": False}
+            for surface in ("PCC", "APC", "AC")
+            for date, pci in (("2019-01-01", 92), ("2021-01-01", 86))
+        ]).to_csv(source, index=False)
+        surfaces = ["PCC", "APC", "AC_AAC_ACC"]
+        pipeline = self.pipeline([source], surfaces=surfaces, include_pci_rate=True)
+        self.quiet(pipeline.ingest)
+        for surface in surfaces:
+            with self.subTest(surface=surface):
+                for stage in (pipeline.pair, pipeline.location_rate, pipeline.climate,
+                              pipeline.derive_targets, pipeline.calculate_pci):
+                    self.quiet(stage, surface)
+                curated = read_table(pipeline.path("06_curated", surface))
+                self.assertEqual(len(curated), 1)
+                self.assertFalse({"export_gap_start", "export_gap_end"} & set(curated))
+                self.quiet(pipeline.modeling, surface)
+                model = read_table(pipeline.path("07_modeling", surface))
+                self.assertEqual(len(model), 1)
+                self.assertAlmostEqual(float(model.DetRatePerYear.iloc[0]), -6 * 365 / 731)
+                deducts = [column for column in model if column.endswith(" deduct_end")]
+                self.assertGreater(len(deducts), 0)
+                self.assertTrue(model[deducts].isna().all().all())
+                audit = pd.read_csv(pipeline.out / f"07_modeling/{surface}_feature_audit.csv").set_index("column")
+                self.assertEqual(audit.loc["DetRatePerYear", "disposition"], "TARGET")
+                eligibility = pd.read_csv(pipeline.out / f"07_modeling/{surface}_target_eligibility.csv")
+                rate = eligibility.loc[eligibility.target.eq("DetRatePerYear")]
+                self.assertTrue(rate.eligible.all())
+                self.assertEqual(rate.reason.tolist(), ["eligible"])
+                absent = eligibility.loc[eligibility.target.isin(deducts)]
+                self.assertFalse(absent.eligible.any())
+                self.assertTrue(absent.reason.eq("invalid_or_unobserved_target").all())
+
     def test_normalized_identity_and_date_aliases_cannot_be_model_predictors(self):
         pipeline = self.pipeline(airfield_col="Network name_start")
         write_csv(pipeline.path("06_curated", "PCC"), self.model_frame())

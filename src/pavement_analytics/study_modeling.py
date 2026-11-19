@@ -1,4 +1,4 @@
-"""Deduct-level searches on one shared, group-disjoint evaluation plan.
+"""Deduct-total and signed PCI-rate searches on a group-disjoint plan.
 
 By default errors and permutations give each evaluation group equal total weight.
 The original-pipeline adapter may explicitly supply positive interval weights.
@@ -24,7 +24,7 @@ from sklearn.preprocessing import OneHotEncoder, StandardScaler
 
 from .io import write_json
 from .model_registry import (REGISTRY_VERSION, build_candidates, candidate_catalog,
-                             environment_versions, metadata_for)
+                             environment_versions, metadata_for, baseline_metadata, validate_target_kind)
 from .security import SafeError
 from .model_runtime import ACTIVE, ModelRuntime, ModelTimeout, model_options as normalize_model_options, fit_budget, runtime_context
 from .two_stage import (STAGE_PREDICTION_COLUMNS, STAGE_METRIC_COLUMNS,
@@ -106,6 +106,8 @@ def weighted_median(y, weights) -> float:
 class MedianRegressor(RegressorMixin, BaseEstimator):
     """An intercept-only MAE baseline fitted with group-balanced weights."""
 
+    target_kind = "deduct_total"
+
     def fit(self, X, y, sample_weight=None):
         weights = np.ones(len(y)) if sample_weight is None else sample_weight
         self.median_ = weighted_median(y, weights)
@@ -113,6 +115,24 @@ class MedianRegressor(RegressorMixin, BaseEstimator):
 
     def predict(self, X):
         return np.full(len(X), self.median_, dtype=float)
+
+
+class MeanRegressor(RegressorMixin, BaseEstimator):
+    """Training-weighted constant baseline for signed PCI-rate squared loss."""
+
+    target_kind = "signed_pci_rate"
+
+    def fit(self, X, y, sample_weight=None):
+        self.mean_ = float(np.average(y, weights=sample_weight))
+        return self
+
+    def predict(self, X):
+        return np.full(len(X), self.mean_, dtype=float)
+
+
+def baseline_estimator(target_kind="deduct_total"):
+    validate_target_kind(target_kind)
+    return MeanRegressor() if target_kind == "signed_pci_rate" else MedianRegressor()
 
 
 class FeatureCleaner(TransformerMixin, BaseEstimator):
@@ -142,21 +162,26 @@ class FeatureCleaner(TransformerMixin, BaseEstimator):
 
 
 class NonnegativeRegressor(RegressorMixin, BaseEstimator):
-    """Keep the physical lower bound in both evaluation and saved prediction."""
+    """Apply the target's prediction bound in evaluation and saved models."""
 
-    def __init__(self, estimator):
+    def __init__(self, estimator, target_kind="deduct_total"):
         self.estimator = estimator
+        self.target_kind = target_kind
 
     def fit(self, X, y, sample_weight=None):
+        validate_target_kind(self.target_kind)
         self.estimator_ = clone(self.estimator)
         self.estimator_.fit(X, y, model__sample_weight=sample_weight)
         return self
 
     def predict(self, X):
-        return np.maximum(0, self.estimator_.predict(X))
+        target_kind = validate_target_kind(getattr(self, "target_kind", "deduct_total"))
+        prediction = self.estimator_.predict(X)
+        return np.maximum(0, prediction) if target_kind == "deduct_total" else prediction
 
 
-def _estimator(model):
+def _estimator(model, target_kind="deduct_total"):
+    validate_target_kind(target_kind)
     numeric = Pipeline([
         ("impute", SimpleImputer(strategy="median", keep_empty_features=True, add_indicator=True)),
         ("scale", StandardScaler()),
@@ -172,12 +197,12 @@ def _estimator(model):
             ("categorical", categorical, make_column_selector(dtype_exclude=np.number)),
         ], sparse_threshold=0)),
         ("model", model),
-    ]))
+    ]), target_kind=target_kind)
 
 
-def candidates(seed: int) -> dict:
+def candidates(seed: int, target_kind="deduct_total") -> dict:
     """Compatibility adapter for the implemented, versioned registry."""
-    return build_candidates(seed)
+    return build_candidates(seed, target_kind=target_kind)
 
 
 def _score(y, prediction, weights) -> dict:
@@ -198,7 +223,7 @@ def _fit(estimator, X, y, weights, groups=None):
     # A constant training fold has no learnable relation. This also avoids
     # meaningless coordinate-descent convergence warnings on a zero target.
     if np.ptp(y) == 0 and not getattr(estimator, "handles_constant_targets", False):
-        return MedianRegressor().fit(X, y, sample_weight=weights)
+        return baseline_estimator(getattr(estimator, "target_kind", "deduct_total")).fit(X, y, sample_weight=weights)
     fitted = clone(estimator)
     if callable(getattr(fitted, "fit_grouped", None)):
         return fitted.fit_grouped(X, y, sample_weight=weights, groups=groups)
@@ -209,7 +234,7 @@ def _training_details(fitted, estimator, groups):
     details = getattr(fitted, "training_details_", None)
     if details is not None:
         return details
-    if isinstance(fitted, MedianRegressor) and callable(getattr(estimator, "fit_grouped", None)):
+    if isinstance(fitted, (MedianRegressor, MeanRegressor)) and callable(getattr(estimator, "fit_grouped", None)):
         return {"iteration_policy": "constant_training_target", "iterations": 0,
                 "probe_iterations": 0, "fitting_groups": sorted(set(groups.astype(str))),
                 "stopping_groups": [], "refit_groups": sorted(set(groups.astype(str)))}
@@ -217,14 +242,15 @@ def _training_details(fitted, estimator, groups):
 
 
 IMPORTANCE_COLUMNS = ["feature", "kind", "is_climate", "importance_mean", "importance_std",
-                      "repeats", "reliable"]
+                      "repeats", "reliable", "metric"]
 PREDICTION_COLUMNS = ["row_id", "group_id", "actual", "prediction", "baseline_prediction",
                       "nonclimate_prediction", "weight"]
 FOLD_COLUMNS = ["candidate", "feature_set", "fold", "mae", "rmse", "r2"]
 LEADERBOARD_COLUMNS = ["candidate", "feature_set", "cv_mae", "cv_mae_std", "cv_rmse",
                        "cv_wins_vs_baseline", "family", "candidate_status", "error_code",
                        "folds_completed", "selected", "parameters", "cv_iterations",
-                       "cv_training", "final_iterations", "final_training", "two_stage_diagnostic", "diagnostic_training"]
+                       "cv_training", "final_iterations", "final_training", "two_stage_diagnostic", "diagnostic_training",
+                       "cv_rmse_std", "target_kind", "selection_metric", "baseline_candidate"]
 
 
 def _write_empty(out, summary):
@@ -239,14 +265,18 @@ def _write_empty(out, summary):
         pd.DataFrame(columns=columns).to_csv(out / name, index=False)
     write_json(out / "candidate_audit.json", {"registry_version": REGISTRY_VERSION,
                "task_status": summary["status"], "attempts": [],
-               "catalog": candidate_catalog(summary["seed"])})
+               "target_kind": summary["target_kind"],
+               "catalog": candidate_catalog(summary["seed"], target_kind=summary["target_kind"])})
     write_json(out / "summary.json", summary)
     return summary
 
 
 def _checked_prediction(estimator, X):
     prediction = np.asarray(estimator.predict(X), dtype=float)
-    if prediction.shape != (len(X),) or not np.isfinite(prediction).all() or (prediction < 0).any():
+    target_kind = validate_target_kind(getattr(estimator, "target_kind", "deduct_total"))
+    if prediction.shape != (len(X),) or not np.isfinite(prediction).all():
+        raise ValueError("MODEL_PREDICTIONS_MUST_BE_FINITE_VECTOR")
+    if target_kind == "deduct_total" and (prediction < 0).any():
         raise ValueError("MODEL_PREDICTIONS_MUST_BE_FINITE_NONNEGATIVE_VECTOR")
     return prediction
 
@@ -302,22 +332,29 @@ def _write_stage_metrics(out, stage_rows, attempts, planned_folds):
 
 
 def _evaluate_candidates(development, heldout, columns, target, feature_set,
-                         planned_folds, seed, weight_column, out, constant, requested):
+                         planned_folds, seed, weight_column, out, constant, requested,
+                         target_kind="deduct_total"):
     """Select on complete CV results; isolate construction/fit/predict failures."""
     y = development[target].to_numpy(float)
-    estimators = {"median": MedianRegressor()}
+    baseline_id = baseline_metadata(target_kind)["candidate"]
+    selection_metric = "rmse" if target_kind == "signed_pci_rate" else "mae"
+    estimators = {baseline_id: baseline_estimator(target_kind)}
     if columns and not constant:
-        pool = candidates(seed) if requested is None else build_candidates(seed, requested)
+        if target_kind == "deduct_total":
+            pool = candidates(seed) if requested is None else build_candidates(seed, requested)
+        else:
+            pool = candidates(seed, target_kind=target_kind) if requested is None else build_candidates(
+                seed, requested, target_kind=target_kind)
         estimators.update(pool)
-        entries = getattr(pool, "entries", [dict(metadata_for(name, seed), candidate_status="ready", error_code=None)
+        entries = getattr(pool, "entries", [dict(metadata_for(name, seed, target_kind), candidate_status="ready", error_code=None)
                                           for name in pool])
         diagnostics = getattr(pool, "diagnostics", {})
     else:
         entries = [dict(entry, candidate_status="not_attempted_constant_target" if constant else "not_attempted_no_features",
-                        error_code=None) for entry in candidate_catalog(seed) if entry["candidate"] != "median"
+                        error_code=None) for entry in candidate_catalog(seed, target_kind) if entry["candidate"] != baseline_id
                    and (requested is None or entry["candidate"] in requested)]
         diagnostics = {}
-    entries = [dict(metadata_for("median", seed), candidate_status="ready", error_code=None), *entries]
+    entries = [dict(metadata_for(baseline_id, seed, target_kind), candidate_status="ready", error_code=None), *entries]
     attempts = {entry["candidate"]: dict(entry, feature_set=feature_set, folds_completed=0, selected=False,
                                         cv_training=[], final_training=None) for entry in entries}
     for name, diagnostic in diagnostics.items():
@@ -340,7 +377,7 @@ def _evaluate_candidates(development, heldout, columns, target, feature_set,
                 if details is not None:
                     attempt["cv_training"].append(dict(fold=fold, **details))
             except Exception:
-                if name == "median":
+                if name == baseline_id:
                     raise
                 _candidate_failure(out, attempt, "failed_fit", "CANDIDATE_FIT_FAILED")
                 continue
@@ -349,7 +386,7 @@ def _evaluate_candidates(development, heldout, columns, target, feature_set,
                 component_rows = _component_rows(fitted, components, development.loc[test], target, test_weights,
                                                  name, feature_set, "development_oof", fold)
             except Exception:
-                if name == "median":
+                if name == baseline_id:
                     raise
                 _candidate_failure(out, attempt, "failed_predict", "CANDIDATE_PREDICTION_FAILED")
                 continue
@@ -363,11 +400,13 @@ def _evaluate_candidates(development, heldout, columns, target, feature_set,
                              "prediction": float(predicted), "weight": float(weight)}
                             for (row_id, group_id, actual), predicted, weight in zip(identities, prediction, test_weights))
     scores = pd.DataFrame(results)
-    baseline = scores.loc[scores.candidate.eq("median")].set_index("fold").mae
+    baseline = scores.loc[scores.candidate.eq(baseline_id)].set_index("fold")[selection_metric]
     leaders = []
     for name, attempt in attempts.items():
         row = {"candidate": name, "feature_set": feature_set, "family": attempt["family"],
-               "cv_mae": None, "cv_mae_std": None, "cv_rmse": None, "cv_wins_vs_baseline": None,
+               "cv_mae": None, "cv_mae_std": None, "cv_rmse": None, "cv_rmse_std": None,
+               "cv_wins_vs_baseline": None, "target_kind": target_kind,
+               "selection_metric": selection_metric, "baseline_candidate": baseline_id,
                "parameters": json.dumps(attempt["parameters"], sort_keys=True), "folds_completed": attempt["folds_completed"],
                "cv_iterations": json.dumps([fit["iterations"] for fit in attempt["cv_training"]]),
                "cv_training": json.dumps(attempt["cv_training"], sort_keys=True),
@@ -376,14 +415,14 @@ def _evaluate_candidates(development, heldout, columns, target, feature_set,
             attempt["candidate_status"] = "completed"
             block = scores.loc[scores.candidate.eq(name)].sort_values("fold")
             row.update(cv_mae=float(block.mae.mean()), cv_mae_std=float(block.mae.std(ddof=0)),
-                       cv_rmse=float(block.rmse.mean()),
-                       cv_wins_vs_baseline=int((block.mae.to_numpy() < baseline.loc[block.fold].to_numpy()).sum()))
+                       cv_rmse=float(block.rmse.mean()), cv_rmse_std=float(block.rmse.std(ddof=0)),
+                       cv_wins_vs_baseline=int((block[selection_metric].to_numpy() < baseline.loc[block.fold].to_numpy()).sum()))
         row.update(candidate_status=attempt["candidate_status"], error_code=attempt["error_code"], selected=False)
         leaders.append(row)
     # Missing/partial results can never become an attractive CV score. The
     # baseline wins ties, as it did before the registry refactor.
     eligible = sorted([row for row in leaders if row["candidate_status"] == "completed"],
-                      key=lambda row: (row["cv_mae"], row["candidate"] != "median", row["candidate"]))
+                      key=lambda row: (row["cv_"+selection_metric], row["candidate"] != baseline_id, row["candidate"]))
     primary = None
     for best in eligible:
         name = best["candidate"]
@@ -396,7 +435,7 @@ def _evaluate_candidates(development, heldout, columns, target, feature_set,
             if details is not None:
                 best.update(final_iterations=details["iterations"], final_training=json.dumps(details, sort_keys=True))
         except Exception:
-            if name == "median":
+            if name == baseline_id:
                 raise
             _candidate_failure(out, attempts[name], "failed_refit", "CANDIDATE_REFIT_FAILED")
             best.update(candidate_status=attempts[name]["candidate_status"], error_code=attempts[name]["error_code"])
@@ -404,7 +443,7 @@ def _evaluate_candidates(development, heldout, columns, target, feature_set,
         try:
             predicted, components = _prediction_bundle(fitted, heldout[columns])
         except Exception:
-            if name == "median":
+            if name == baseline_id:
                 raise
             _candidate_failure(out, attempts[name], "failed_refit_predict", "CANDIDATE_REFIT_PREDICTION_FAILED")
             best.update(candidate_status=attempts[name]["candidate_status"], error_code=attempts[name]["error_code"])
@@ -474,13 +513,17 @@ def _validate_plan(table, partitions):
 
 def _search_levels(table: pd.DataFrame, features: list[str], target: str, out: Path,
                   partitions: pd.DataFrame, climate_features: list[str], seed: int = 42,
-                  weight_column: str | None = None, candidate_ids: list[str] | None = None) -> dict:
+                  weight_column: str | None = None, candidate_ids: list[str] | None = None,
+                  target_kind="deduct_total") -> dict:
     """Fit one target, selecting both full and climate-ablation models by CV.
 
     Material filtering belongs to the caller, but the supplied partition plan
     must be the same for every call. Missing target values are excluded only
     after joining that plan. A skipped task remains an explicit report row.
     """
+    validate_target_kind(target_kind)
+    baseline = baseline_metadata(target_kind)
+    selection_metric = "rmse" if target_kind == "signed_pci_rate" else "mae"
     if (not features or len(features) != len(set(features)) or target in features
             or not set(features) <= set(table) or not set(climate_features) <= set(features)
             or not {"row_id", "group_id", target} <= set(table)
@@ -491,7 +534,8 @@ def _search_levels(table: pd.DataFrame, features: list[str], target: str, out: P
         if weight_column in features or weight_column == target:
             raise SafeError("STUDY_WEIGHT_MUST_NOT_BE_FEATURE_OR_TARGET")
         _weights(table, weight_column)
-    forbidden = {"row_id", "group_id", "section_id", "start_date", "end_date", "partition", "fold", "delta_days"}
+    forbidden = {"row_id", "group_id", "section_id", "start_date", "end_date", "partition", "fold", "delta_days",
+                 "delta_PCI", "DetRatePerYear"}
     if any(not isinstance(name, str) or name in forbidden or name.endswith(("_end", "_delta"))
            or name.startswith(("level_", "oracle_", "truth_", "_source_")) or "__conditional_" in name
            or name.endswith(("__p_positive", "__positive_mean"))
@@ -500,12 +544,12 @@ def _search_levels(table: pd.DataFrame, features: list[str], target: str, out: P
     if candidate_ids is not None:
         # Explicit selections are required, rather than silently skipped when a
         # package or supported weighted implementation is unavailable.
-        build_candidates(seed, candidate_ids)
+        build_candidates(seed, candidate_ids, target_kind=target_kind)
     data = table.copy()
     data["group_id"] = _groups(data)
     data[target] = pd.to_numeric(data[target], errors="coerce")
     data = data.loc[np.isfinite(data[target])].copy()
-    if data[target].lt(0).any():
+    if target_kind == "deduct_total" and data[target].lt(0).any():
         raise SafeError("NEGATIVE_DEDUCT_TARGET")
     data = data.merge(plan[["group_id", "partition", "fold"]], on="group_id", how="left", validate="many_to_one")
     development = data.loc[data.partition.eq("development")].reset_index(drop=True)
@@ -515,18 +559,24 @@ def _search_levels(table: pd.DataFrame, features: list[str], target: str, out: P
     summary = {"target": target, "status": "no_valid_target", "candidate": None,
                "cv_mae": None, "cv_mae_std": None, "holdout_mae": None,
                "holdout_rmse": None, "holdout_r2": None, "baseline_mae": None,
+               "cv_rmse": None, "cv_rmse_std": None, "baseline_rmse": None,
+               "rmse_skill": None, "climate_added_rmse_skill": None, "nonclimate_rmse": None,
                "mae_skill": None, "climate_added_skill": None, "nonclimate_mae": None,
                "nonclimate_candidate": None, "importance_reliable": False,
+               "target_kind": target_kind, "importance_metric": selection_metric,
+               "baseline_candidate": baseline["candidate"], "baseline_family": baseline["family"],
+               "baseline_prediction_meaning": baseline["prediction_meaning"],
                "valid_target_rows": len(data), "valid_target_groups": int(data.group_id.nunique()),
                "excluded_missing_target": len(table) - len(data),
                "development_rows": len(development), "development_groups": int(development.group_id.nunique()),
                "holdout_rows": len(heldout), "holdout_groups": int(heldout.group_id.nunique()),
-               "nonzero_fraction": float(data[target].gt(0).mean()) if len(data) else None,
+               "nonzero_fraction": float(data[target].ne(0).mean()) if len(data) else None,
                "target_std": float(data[target].std(ddof=0)) if len(data) else None,
                "folds": planned_folds, "seed": seed,
                "candidate_registry_version": REGISTRY_VERSION, "candidate_family": None,
-               "candidate_failure_count": 0, "candidate_unavailable_count": 0,
-               "selection_metric": "mean_group_balanced_cv_MAE" if weight_column is None else "mean_interval_weighted_cv_MAE",
+               "candidate_failure_count": 0, "candidate_unavailable_count": 0, "candidate_ineligible_count": 0,
+               "selection_metric": ("mean_group_balanced_cv_" if weight_column is None
+                                    else "mean_interval_weighted_cv_") + selection_metric.upper(),
                "weight_column": weight_column,
                "weighting": "Each group receives equal total weight within each evaluation set" if weight_column is None
                             else "Each observation is weighted by its positive inspection interval in days",
@@ -546,13 +596,15 @@ def _search_levels(table: pd.DataFrame, features: list[str], target: str, out: P
     nonclimate = [feature for feature in features if feature not in climate_features]
     constant = np.ptp(y) == 0
     if ACTIVE.get() is not None:
-        ACTIVE.get().budget(fit_budget(planned_folds, ACTIVE.get().options, constant=bool(constant)))
+        ACTIVE.get().budget(fit_budget(planned_folds, ACTIVE.get().options,
+                                      constant=bool(constant), target_kind=target_kind))
     sets = {"all": features, "nonclimate": nonclimate}
     fold_scores, leaders, fitted_sets, attempts = [], [], {}, []
     oof_rows, stage_rows = [], []
     for feature_set, columns in sets.items():
         best, selected, predicted, results, oof, candidate_rows, audit, stages = _evaluate_candidates(
-            development, heldout, columns, target, feature_set, planned_folds, seed, weight_column, out, constant, candidate_ids)
+            development, heldout, columns, target, feature_set, planned_folds, seed, weight_column,
+            out, constant, candidate_ids, target_kind)
         fitted_sets[feature_set] = (best, selected, predicted)
         fold_scores.extend(results)
         leaders.extend(candidate_rows)
@@ -561,29 +613,39 @@ def _search_levels(table: pd.DataFrame, features: list[str], target: str, out: P
         stage_rows.extend(stages)
     best, fitted, predicted = fitted_sets["all"]
     nonclimate_best, nonclimate_fitted, nonclimate_predicted = fitted_sets["nonclimate"]
-    baseline_fitted = MedianRegressor().fit(development[features], y, sample_weight=training_weights)
+    baseline_fitted = baseline_estimator(target_kind).fit(development[features], y, sample_weight=training_weights)
     baseline_predicted = baseline_fitted.predict(heldout[features])
     measured = _score(held_y, predicted, held_weights)
-    baseline_mae = _score(held_y, baseline_predicted, held_weights)["mae"]
-    nonclimate_mae = _score(held_y, nonclimate_predicted, held_weights)["mae"]
+    baseline_scores = _score(held_y, baseline_predicted, held_weights)
+    nonclimate_scores = _score(held_y, nonclimate_predicted, held_weights)
+    baseline_mae = baseline_scores["mae"]
+    nonclimate_mae = nonclimate_scores["mae"]
     skill = float(1 - measured["mae"] / baseline_mae) if baseline_mae > 0 else None
-    reliable = (best["candidate"] != "median" and skill is not None and skill > 0
+    rmse_skill = float(1 - measured["rmse"] / baseline_scores["rmse"]) if baseline_scores["rmse"] > 0 else None
+    importance_skill = rmse_skill if selection_metric == "rmse" else skill
+    reliable = (best["candidate"] != baseline["candidate"] and importance_skill is not None and importance_skill > 0
                 and measured["r2"] is not None and measured["r2"] > 0
                 and heldout.group_id.nunique() >= 2)
-    summary.update(status="constant_target" if constant else ("baseline_selected" if best["candidate"] == "median" else "modeled"),
+    summary.update(status="constant_target" if constant else ("baseline_selected" if best["candidate"] == baseline["candidate"] else "modeled"),
                    candidate=best["candidate"], cv_mae=best["cv_mae"], cv_mae_std=best["cv_mae_std"],
+                   cv_rmse=best["cv_rmse"], cv_rmse_std=best["cv_rmse_std"],
                    candidate_family=best["family"], candidate_parameters=json.loads(best["parameters"]),
                    candidate_iterations=best.get("final_iterations"),
                    candidate_failure_count=sum(a["candidate_status"].startswith(("failed_", "timed_out_")) for a in attempts),
                    candidate_unavailable_count=sum(a["candidate_status"] in {"unavailable", "unsupported"} for a in attempts),
+                   candidate_ineligible_count=sum(a["candidate_status"] == "ineligible_target" for a in attempts),
                    holdout_mae=measured["mae"], holdout_rmse=measured["rmse"], holdout_r2=measured["r2"],
-                   baseline_mae=baseline_mae, mae_skill=skill,
+                   baseline_mae=baseline_mae, baseline_rmse=baseline_scores["rmse"],
+                   mae_skill=skill, rmse_skill=rmse_skill,
                    climate_added_skill=float(1 - measured["mae"] / nonclimate_mae) if climate_features and nonclimate_mae > 0 else None,
+                   climate_added_rmse_skill=float(1 - measured["rmse"] / nonclimate_scores["rmse"])
+                       if climate_features and nonclimate_scores["rmse"] > 0 else None,
                    nonclimate_mae=nonclimate_mae, nonclimate_candidate=nonclimate_best["candidate"],
+                   nonclimate_rmse=nonclimate_scores["rmse"],
                    importance_reliable=bool(reliable), importance_repeats=5,
                    constant_target_scope="development" if constant else None)
     importance = []
-    if best["candidate"] != "median":
+    if best["candidate"] != baseline["candidate"]:
         runtime_context(candidate=best["candidate"], family=best["family"], feature_set="all", phase="primary_importance", fold=-1)
         blocks = [(feature, "feature", [feature], feature in climate_features) for feature in features]
         if climate_features:
@@ -597,8 +659,8 @@ def _search_levels(table: pd.DataFrame, features: list[str], target: str, out: P
                 for order in orders:
                     perturbed = heldout[features].copy()
                     perturbed.loc[:, columns] = heldout.iloc[order][columns].to_numpy()
-                    error = _score(held_y, _prediction_bundle(fitted, perturbed)[0], held_weights)["mae"]
-                    changes.append(error - measured["mae"])
+                    error = _score(held_y, _prediction_bundle(fitted, perturbed)[0], held_weights)[selection_metric]
+                    changes.append(error - measured[selection_metric])
             except Exception as error:
                 if ACTIVE.get() is None:
                     raise
@@ -610,12 +672,14 @@ def _search_levels(table: pd.DataFrame, features: list[str], target: str, out: P
             importance.append({"feature": name, "kind": kind, "is_climate": is_climate,
                                "importance_mean": float(np.mean(changes)),
                                "importance_std": float(np.std(changes, ddof=0)),
-                               "repeats": 5, "reliable": bool(reliable)})
+                               "repeats": 5, "reliable": bool(reliable), "metric": selection_metric})
     pd.DataFrame(importance, columns=IMPORTANCE_COLUMNS).to_csv(out / "importance.csv", index=False)
     pd.DataFrame(fold_scores, columns=FOLD_COLUMNS).to_csv(out / "fold_scores.csv", index=False)
-    pd.DataFrame(leaders, columns=LEADERBOARD_COLUMNS).sort_values(["feature_set", "cv_mae", "candidate"]).to_csv(out / "leaderboard.csv", index=False)
+    pd.DataFrame(leaders, columns=LEADERBOARD_COLUMNS).sort_values(["feature_set", "cv_"+selection_metric, "candidate"]).to_csv(out / "leaderboard.csv", index=False)
     write_json(out / "candidate_audit.json", {"registry_version": REGISTRY_VERSION, "seed": seed,
-               "requested_candidates": candidate_ids, "environment": environment_versions(), "attempts": attempts})
+               "requested_candidates": candidate_ids, "environment": environment_versions(),
+               "target_kind": target_kind, "selection_metric": summary["selection_metric"],
+               "baseline_candidate": baseline["candidate"], "attempts": attempts})
     pd.DataFrame(oof_rows).to_csv(out / "oof_predictions.csv", index=False)
     _write_stage_metrics(out, stage_rows, attempts, planned_folds)
     predictions = heldout[["row_id", "group_id"]].copy()
@@ -626,6 +690,8 @@ def _search_levels(table: pd.DataFrame, features: list[str], target: str, out: P
     predictions["weight"] = held_weights
     predictions.to_csv(out / "holdout_predictions.csv", index=False)
     joblib.dump({"format_version": 1, "candidate_registry_version": REGISTRY_VERSION,
+                 "target_kind": target_kind, "selection_metric": summary["selection_metric"],
+                 "baseline_candidate": baseline["candidate"], "baseline_family": baseline["family"],
                  "candidate_family": best["family"], "candidate_parameters": json.loads(best["parameters"]),
                  "training_details": getattr(fitted, "training_details_", None),
                  "nonclimate_training_details": getattr(nonclimate_fitted, "training_details_", None),
@@ -648,16 +714,19 @@ def _search_levels(table: pd.DataFrame, features: list[str], target: str, out: P
 def search_levels(table: pd.DataFrame, features: list[str], target: str, out: Path,
                   partitions: pd.DataFrame, climate_features: list[str], seed: int = 42,
                   weight_column: str | None = None, candidate_ids: list[str] | None = None,
-                  model_options: dict | None = None, progress=None) -> dict:
+                  model_options: dict | None = None, progress=None, target_kind="deduct_total") -> dict:
     """Run one target. Full/study enable bounded R7 comparisons explicitly.
 
     Omitting model_options preserves the established in-process library path.
     """
+    validate_target_kind(target_kind)
     if model_options is None and progress is None:
-        return _search_levels(table, features, target, out, partitions, climate_features, seed, weight_column, candidate_ids)
+        return _search_levels(table, features, target, out, partitions, climate_features,
+                              seed, weight_column, candidate_ids, target_kind)
     options = normalize_model_options(model_options)
     if candidate_ids is not None and options["candidate_ids"] is not None and candidate_ids != options["candidate_ids"]:
         raise SafeError("DUPLICATE_MODEL_CANDIDATE_SELECTION")
     options["candidate_ids"] = candidate_ids if candidate_ids is not None else options["candidate_ids"]
     with ModelRuntime(out, options, progress):
-        return _search_levels(table, features, target, out, partitions, climate_features, seed, weight_column, options["candidate_ids"])
+        return _search_levels(table, features, target, out, partitions, climate_features,
+                              seed, weight_column, options["candidate_ids"], target_kind)

@@ -117,19 +117,23 @@ class AdditiveSplineFeatures(TransformerMixin, BaseEstimator):
 
 
 class AdditiveSplineRegressor(RegressorMixin, BaseEstimator):
-    """Nonnegative clipped sum of univariate splines and additive category terms."""
+    """Weighted sum of univariate splines and additive category terms."""
 
     def __init__(self, n_knots=5, degree=3, alpha=0.1, extrapolation="constant", knots="uniform",
-                 solver="cholesky", categorical_features=()):
+                 solver="cholesky", categorical_features=(), target_kind="deduct_total"):
         self.n_knots, self.degree, self.alpha = n_knots, degree, alpha
         self.extrapolation, self.knots, self.solver = extrapolation, knots, solver
         self.categorical_features = categorical_features
+        self.target_kind = target_kind
 
     def fit(self, X, y, sample_weight=None):
+        from .model_registry import validate_target_kind
+        target_kind = validate_target_kind(self.target_kind)
         y = np.asarray(y, dtype=float)
         weights = np.ones(len(y)) if sample_weight is None else np.asarray(sample_weight, dtype=float)
         if (not isinstance(X, pd.DataFrame) or not len(y) or y.shape != (len(X),) or weights.shape != y.shape
-                or not np.isfinite(y).all() or (y < 0).any() or not np.isfinite(weights).all() or (weights <= 0).any()):
+                or not np.isfinite(y).all() or (target_kind == "deduct_total" and (y < 0).any())
+                or not np.isfinite(weights).all() or (weights <= 0).any()):
             raise SafeError("INVALID_WEIGHTED_MODEL_INPUT")
         if (isinstance(self.n_knots, bool) or not isinstance(self.n_knots, int) or self.n_knots < 2
                 or self.degree != 3 or self.extrapolation != "constant" or self.knots != "uniform"
@@ -144,6 +148,7 @@ class AdditiveSplineRegressor(RegressorMixin, BaseEstimator):
         self.estimator_ = Ridge(alpha=self.alpha, solver=self.solver).fit(encoded, y, sample_weight=weights)
         self.n_features_in_, self.feature_names_in_ = X.shape[1], np.asarray(X.columns, dtype=object)
         self.training_details_ = {"iteration_policy": "closed_form_weighted_ridge", "iterations": None,
+                                  "target_kind": target_kind,
                                   "probe_iterations": 0, "fitting_rows": len(y), "refit_rows": len(y),
                                   "fitting_weight_sum": float(weights.sum()), "refit_weight_sum": float(weights.sum()),
                                   "stopping_groups": [], "stopping_rows": 0, "alpha": self.alpha,
@@ -168,7 +173,10 @@ class AdditiveSplineRegressor(RegressorMixin, BaseEstimator):
         return self.estimator_.predict(self.features_.transform(X))
 
     def predict(self, X):
-        return np.maximum(0, self.predict_margin(X))
+        from .model_registry import validate_target_kind
+        target_kind = validate_target_kind(getattr(self, "target_kind", "deduct_total"))
+        margin = self.predict_margin(X)
+        return np.maximum(0, margin) if target_kind == "deduct_total" else margin
 
     def predict_components(self, X):
         """Private additive terms; centering/association does not imply causality."""

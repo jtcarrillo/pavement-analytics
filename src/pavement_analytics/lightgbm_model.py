@@ -7,7 +7,8 @@ from sklearn.base import BaseEstimator, RegressorMixin
 from sklearn.utils.validation import check_is_fitted
 
 from .boosting import grouped_stopping_split
-from .model_registry import LIGHTGBM_MAX_VERSION, LIGHTGBM_MIN_VERSION, dependency_version
+from .model_registry import (LIGHTGBM_MAX_VERSION, LIGHTGBM_MIN_VERSION, dependency_version,
+                             validate_target_kind)
 from .security import SafeError
 
 
@@ -44,10 +45,12 @@ def _schema(preprocessor, encoded):
 class GroupedLightGBMRegressor(RegressorMixin, BaseEstimator):
     """Use the shared feature pipeline and nested grouped iteration policy."""
 
-    def __init__(self, parameters, early_stopping_rounds=None, stopping_fraction=0.2):
+    def __init__(self, parameters, early_stopping_rounds=None, stopping_fraction=0.2,
+                 target_kind="deduct_total"):
         self.parameters = parameters
         self.early_stopping_rounds = early_stopping_rounds
         self.stopping_fraction = stopping_fraction
+        self.target_kind = target_kind
 
     def fit(self, X, y, sample_weight=None):
         if self.early_stopping_rounds is not None:
@@ -56,11 +59,13 @@ class GroupedLightGBMRegressor(RegressorMixin, BaseEstimator):
 
     def fit_grouped(self, X, y, sample_weight=None, groups=None):
         from .study_modeling import _estimator
+        target_kind = validate_target_kind(self.target_kind)
         backend = require_lightgbm()
         y = np.asarray(y, dtype=float)
         weights = np.ones(len(y)) if sample_weight is None else np.asarray(sample_weight, dtype=float)
         if (not isinstance(X, pd.DataFrame) or not len(y) or y.shape != (len(X),)
-                or weights.shape != y.shape or not np.isfinite(y).all() or (y < 0).any()
+                or weights.shape != y.shape or not np.isfinite(y).all()
+                or (target_kind == "deduct_total" and (y < 0).any())
                 or not np.isfinite(weights).all() or (weights <= 0).any()):
             raise SafeError("INVALID_WEIGHTED_MODEL_INPUT")
         group_series = None if groups is None else pd.Series(groups).reset_index(drop=True)
@@ -69,17 +74,19 @@ class GroupedLightGBMRegressor(RegressorMixin, BaseEstimator):
                 raise SafeError("MODEL_VALID_TRAINING_GROUPS_REQUIRED")
             group_series = group_series.astype(str)
         parameters = self.parameters.copy()
+        stopping_metric = "rmse" if target_kind == "signed_pci_rate" else "l1"
         forbidden = {"callbacks", "early_stopping_rounds", "early_stopping_round", "device", "num_threads", "nthread"}
         if (parameters.get("device_type") != "cpu" or parameters.get("n_jobs") != 1
                 or parameters.get("objective") != "regression" or parameters.get("boosting_type") != "gbdt"
-                or parameters.get("metric") != "l1" or not parameters.get("deterministic")
+                or parameters.get("metric") != stopping_metric or not parameters.get("deterministic")
                 or not parameters.get("force_col_wise") or forbidden & set(parameters)
                 or not isinstance(parameters.get("n_estimators"), int) or isinstance(parameters["n_estimators"], bool)
                 or parameters["n_estimators"] < 1):
             raise SafeError("UNSUPPORTED_CPU_BOOSTING_CONFIGURATION")
         requested = parameters["n_estimators"]
         groups_all = sorted(group_series.unique()) if group_series is not None else []
-        details = {"iteration_policy": "fixed_budget", "probe_iterations": 0,
+        details = {"iteration_policy": "fixed_budget", "probe_iterations": 0, "target_kind": target_kind,
+                   "stopping_metric": stopping_metric,
                    "fitting_groups": groups_all, "stopping_groups": [], "refit_groups": groups_all,
                    "fitting_rows": len(y), "stopping_rows": 0, "refit_rows": len(y),
                    "fitting_weight_sum": float(weights.sum()), "stopping_weight_sum": 0.,
@@ -93,7 +100,7 @@ class GroupedLightGBMRegressor(RegressorMixin, BaseEstimator):
                     or self.early_stopping_rounds < 1):
                 raise SafeError("INVALID_MODEL_STOPPING_ROUNDS")
             fitting, stopping = grouped_stopping_split(group_series, self.stopping_fraction, parameters["random_state"])
-            preprocessor = _estimator(backend.LGBMRegressor(**parameters)).estimator[:-1]
+            preprocessor = _estimator(backend.LGBMRegressor(**parameters), target_kind=target_kind).estimator[:-1]
             train_X = _encoded(preprocessor, X.iloc[fitting], fitting=True, y=y[fitting])
             stop_X = _encoded(preprocessor, X.iloc[stopping])
             probe = backend.LGBMRegressor(**parameters)
@@ -104,7 +111,7 @@ class GroupedLightGBMRegressor(RegressorMixin, BaseEstimator):
             if not 1 <= requested <= parameters["n_estimators"]:
                 raise SafeError("INVALID_MODEL_STOPPING_ITERATION")
             details.update(iteration_policy="inner_grouped_best_iteration_then_refit_all_training",
-                           probe_iterations=len(probe.evals_result_["valid_0"]["l1"]),
+                           probe_iterations=len(probe.evals_result_["valid_0"][stopping_metric]),
                            probe_model_iterations=int(probe.booster_.current_iteration()),
                            fitting_groups=sorted(group_series.loc[fitting].unique()),
                            stopping_groups=sorted(group_series.loc[stopping].unique()),
@@ -114,7 +121,7 @@ class GroupedLightGBMRegressor(RegressorMixin, BaseEstimator):
             self.stopping_preprocessor_ = preprocessor
             self.stopping_evaluations_ = probe.evals_result_
         parameters["n_estimators"] = requested
-        self.preprocessor_ = _estimator(backend.LGBMRegressor(**parameters)).estimator[:-1]
+        self.preprocessor_ = _estimator(backend.LGBMRegressor(**parameters), target_kind=target_kind).estimator[:-1]
         train_X = _encoded(self.preprocessor_, X, fitting=True, y=y)
         self.estimator_ = backend.LGBMRegressor(**parameters).fit(train_X, y, sample_weight=weights)
         details.update(iterations=int(self.estimator_.n_estimators_), requested_iterations=requested,
@@ -126,4 +133,6 @@ class GroupedLightGBMRegressor(RegressorMixin, BaseEstimator):
 
     def predict(self, X):
         check_is_fitted(self, ("estimator_", "preprocessor_"))
-        return np.maximum(0, self.estimator_.predict(_encoded(self.preprocessor_, X)))
+        prediction = self.estimator_.predict(_encoded(self.preprocessor_, X))
+        target_kind = validate_target_kind(getattr(self, "target_kind", "deduct_total"))
+        return np.maximum(0, prediction) if target_kind == "deduct_total" else prediction

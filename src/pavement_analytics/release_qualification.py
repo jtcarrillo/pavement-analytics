@@ -12,7 +12,7 @@ import pandas as pd
 
 from . import __version__
 from .io import sha256, write_json
-from .model_registry import candidate_catalog, environment_versions, REGISTRY_VERSION
+from .model_registry import candidate_catalog, environment_versions, REGISTRY_VERSION, validate_target_kind
 from .pipeline import code_digest
 from .security import Boundary, SafeError, reject_links, source_root
 from .study_modeling import search_levels
@@ -50,19 +50,28 @@ def _parity(root, data, plan):
     count = 0
     for row in comparisons.loc[comparisons.comparison_status.eq("completed")].itertuples():
         artifact = joblib.load(root/row.model_path)
+        target_kind = validate_target_kind(getattr(row, "target_kind", "deduct_total"))
+        if (artifact.get("target_kind", "deduct_total") != target_kind
+                or getattr(artifact["estimator"], "target_kind", "deduct_total") != target_kind):
+            raise SafeError("RELEASE_TARGET_KIND_MISMATCH")
         saved = predictions.loc[predictions.candidate.eq(row.candidate) & predictions.feature_set.eq(row.feature_set)]
         X = indexed.loc[saved.row_id, artifact["features"]]
         actual = artifact["estimator"].predict(X)
-        if (not np.isfinite(actual).all() or (actual < 0).any() or not np.allclose(actual, saved.prediction, rtol=1e-12, atol=1e-12)
+        if (not np.isfinite(actual).all() or (target_kind == "deduct_total" and (actual < 0).any())
+                or not np.allclose(actual, saved.prediction, rtol=1e-12, atol=1e-12)
                 or artifact["fit_partition"] != "development" or set(saved.group_id)&development
                 or not np.array_equal(saved.weight, indexed.loc[saved.row_id, "delta_days"])):
             raise SafeError("RELEASE_SAVED_MODEL_PARITY_FAILED")
         count += 1
     families = pd.read_csv(root/"family_summary.csv", keep_default_na=False)
     for row in families.loc[families.comparison_status.eq("completed")].itertuples():
+        target_kind = validate_target_kind(getattr(row, "target_kind", "deduct_total"))
+        metric = "cv_rmse" if target_kind == "signed_pci_rate" else "cv_mae"
         choices = comparisons.loc[comparisons.family.eq(row.family) & comparisons.feature_set.eq(row.feature_set)
                                   & comparisons.comparison_status.eq("completed")]
-        if row.candidate != choices.sort_values(["cv_mae", "candidate"]).candidate.iloc[0]:
+        if "target_kind" in choices and not choices.target_kind.eq(target_kind).all():
+            raise SafeError("RELEASE_TARGET_KIND_MISMATCH")
+        if row.candidate != choices.sort_values([metric, "candidate"]).candidate.iloc[0]:
             raise SafeError("RELEASE_FAMILY_SELECTION_MISMATCH")
     importance = pd.read_csv(root/"family_importance.csv", keep_default_na=False)
     if "reliable" in importance or (not importance.empty and not importance.repeats.eq(5).all()):

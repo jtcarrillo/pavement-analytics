@@ -8,6 +8,7 @@ from pathlib import Path
 import unittest
 from unittest.mock import patch
 
+import joblib
 import numpy as np
 import pandas as pd
 
@@ -106,6 +107,112 @@ class FullPipelineTests(unittest.TestCase):
             self.assertNotIn(str(self.root), stream.getvalue())
         return stream.getvalue()
 
+    def assert_signed_rate_outputs(self, pipeline, surfaces):
+        """Trace the signed target from original inspections to saved predictions."""
+        model_root = pipeline / "09_local_models"
+        shared = pd.read_csv(pipeline / "07_modeling/partitions.csv", dtype={"group_id": str})
+        pd.testing.assert_frame_equal(
+            shared, pd.read_csv(model_root / "partitions.csv", dtype={"group_id": str}))
+        row_map = pd.read_csv(model_root / "row_map.csv").set_index("row_id")
+        summary = pd.read_csv(pipeline / "10_report/target_summary.csv")
+        rates = summary.loc[summary.original_target.eq("DetRatePerYear")]
+        self.assertEqual(set(rates.material), set(surfaces))
+        self.assertEqual(len(rates), len(surfaces))
+        self.assertTrue(rates.target.eq("DetRatePerYear").all())
+        self.assertTrue(rates.target_kind.eq("signed_pci_rate").all())
+        self.assertTrue(rates.selection_metric.eq("mean_interval_weighted_cv_RMSE").all())
+        exported = pd.read_csv(pipeline / "10_report/predictions.csv")
+        intervals = pd.read_csv(model_root / "rate_interval_diagnostics.csv")
+        self.assertEqual(len(intervals), 10 * len(surfaces))
+        self.assertEqual(set(intervals.material), set(surfaces))
+        html = (pipeline / "10_report/dashboard.html").read_text()
+        for name in ("rate_benchmark.csv", "rate_interval_diagnostics.csv"):
+            self.assertTrue((model_root / name).is_file())
+            self.assertIn(f'href="../09_local_models/{name}"', html)
+        for surface in surfaces:
+            with self.subTest(surface=surface):
+                curated = pd.read_csv(pipeline / f"06_curated/{surface}.csv")
+                # Recompute from observed PCI and dates, not a model helper or
+                # the recalculated PCI/distress columns produced downstream.
+                days = (pd.to_datetime(curated.end_date) - pd.to_datetime(curated.start_date)).dt.days
+                expected = (curated.PCI_end - curated.PCI_start) / (days / 365.)
+                np.testing.assert_allclose(curated.DetRatePerYear, expected)
+                self.assertTrue(expected.lt(0).all())
+                self.assertGreater(days.nunique(), 1)  # Includes the leap-year interval.
+                recalculated = (curated.pci_calc_end - curated.pci_calc_start) / (days / 365.)
+                self.assertFalse(np.allclose(expected, recalculated, equal_nan=True))
+
+                partitioned = pd.read_csv(pipeline / f"07_modeling/partitioned/{surface}.csv",
+                                          dtype={"partition_airfield": str})
+                model_rows = partitioned._pipeline_model_row.astype(int)
+                np.testing.assert_allclose(partitioned.DetRatePerYear, expected.loc[model_rows])
+                audit = pd.read_csv(pipeline / f"07_modeling/partitioned/{surface}_feature_audit.csv")
+                self.assertEqual(audit.loc[audit.column.eq("DetRatePerYear"), "disposition"].tolist(), ["TARGET"])
+                targets = set(audit.loc[audit.disposition.eq("TARGET"), "column"])
+                features = json.loads((model_root / f"materials/{surface}/features.json").read_text())["features"]
+                self.assertFalse(targets & set(features))
+                self.assertIn("PCI_start", features)
+                self.assertFalse(set(features) & {"PCI_end", "delta_PCI", "delta_days", "DetRatePerYear"})
+                self.assertFalse(any(name.endswith(("_end", "_delta")) or name.startswith(
+                    ("partition_", "_pipeline_", "_source_", "delta_", "pci_diff_", "export_gap_"))
+                    for name in features))
+
+                task = model_root / f"materials/{surface}/DetRatePerYear"
+                task_summary = json.loads((task / "summary.json").read_text())
+                self.assertEqual(task_summary["target_kind"], "signed_pci_rate")
+                self.assertEqual(task_summary["selection_metric"], "mean_interval_weighted_cv_RMSE")
+                self.assertEqual(task_summary["weight_column"], "delta_days")
+                oof = pd.read_csv(task / "oof_predictions.csv", dtype={"group_id": str})
+                selected_oof = oof.loc[oof.candidate.eq(task_summary["candidate"]) & oof.feature_set.eq("all")]
+                fold_rmse = [np.sqrt(np.average((fold.actual - fold.prediction) ** 2, weights=fold.weight))
+                             for _, fold in selected_oof.groupby("fold")]
+                self.assertEqual(len(fold_rmse), int(shared.planned_folds.iloc[0]))
+                self.assertAlmostEqual(task_summary["cv_rmse"], np.mean(fold_rmse))
+                leaders = pd.read_csv(task / "leaderboard.csv")
+                completed = leaders.loc[leaders.feature_set.eq("all") & leaders.candidate_status.eq("completed")]
+                self.assertAlmostEqual(task_summary["cv_rmse"], completed.cv_rmse.min())
+                for folds in (model_root / f"materials/{surface}").glob("*/folds.csv"):
+                    pd.testing.assert_frame_equal(shared, pd.read_csv(folds, dtype={"group_id": str}))
+                np.testing.assert_array_equal(partitioned.partition_fold,
+                    partitioned.partition_airfield.map(shared.set_index("group_id").fold))
+
+                predictions = pd.read_csv(task / "holdout_predictions.csv", dtype={"group_id": str})
+                self.assertGreater(len(predictions), 0)
+                positions = row_map.loc[predictions.row_id, "model_csv_row"].astype(int).to_numpy() - 2
+                heldout = partitioned.iloc[positions]
+                np.testing.assert_allclose(predictions.actual, heldout.DetRatePerYear)
+                np.testing.assert_allclose(predictions.weight, heldout.delta_days)
+                self.assertTrue(predictions.prediction.lt(0).all())
+                self.assertTrue(predictions.baseline_prediction.lt(0).all())
+                self.assertTrue(heldout.partition_fold.eq(-1).all())
+                development = partitioned.loc[partitioned.partition_fold.ne(-1)]
+                self.assertFalse(set(predictions.group_id) & set(development.partition_airfield))
+                weighted_mean = np.average(development.DetRatePerYear, weights=development.delta_days)
+                np.testing.assert_allclose(predictions.baseline_prediction, weighted_mean)
+                rmse = np.sqrt(np.average((predictions.actual - predictions.prediction) ** 2,
+                                          weights=predictions.weight))
+                self.assertAlmostEqual(task_summary["holdout_rmse"], rmse)
+                durations = intervals.loc[intervals.material.eq(surface)]
+                self.assertEqual(len(durations), 10)
+                held_bands = durations.loc[durations.partition.eq("holdout")]
+                self.assertEqual(held_bands.eligible_rows.sum(), task_summary["holdout_rows"])
+                self.assertEqual(held_bands.prediction_rows.sum(), len(predictions))
+                scored_bands = held_bands.loc[held_bands.eligible_rows.gt(0)]
+                self.assertGreater(len(scored_bands), 0)
+                self.assertTrue(scored_bands.prediction_status.eq("scored").all())
+                self.assertTrue(np.isfinite(scored_bands[["weighted_rmse", "weighted_mae", "weighted_sse"]]).all().all())
+                self.assertAlmostEqual(scored_bands.weighted_sse.sum(),
+                    np.sum(predictions.weight * (predictions.actual - predictions.prediction) ** 2))
+                self.assertTrue(durations.loc[durations.partition.eq("development"), "weighted_rmse"].isna().all())
+                fitted = joblib.load(task / "model.joblib")
+                self.assertEqual(fitted["target_kind"], "signed_pci_rate")
+                self.assertEqual(fitted["features"], features)
+                np.testing.assert_allclose(fitted["estimator"].predict(heldout[features]), predictions.prediction)
+                reported = exported.loc[exported.material.eq(surface) & exported.target.eq("DetRatePerYear")]
+                self.assertEqual(set(reported.row_id), set(predictions.row_id))
+                np.testing.assert_allclose(reported.sort_values("row_id").actual,
+                                           predictions.sort_values("row_id").actual)
+
     def test_every_original_stage_then_modeling_report_and_verified_resume(self):
         legacy_checkout = self.root / "legacy_checkout"
         legacy_checkout.mkdir()
@@ -139,6 +246,7 @@ class FullPipelineTests(unittest.TestCase):
             "fallback_reason": "CLIMATE_CACHE_MUST_NOT_BE_VERSIONED"})
         config = json.loads((self.work / "full_config.json").read_text())
         self.assertEqual(config["cache_dir"], str(selected_cache))
+        self.assertTrue(config["include_pci_rate"])
         self.assertFalse(inherited_cache.exists())
         pipeline = self.work / "pipeline"
         report = json.loads((pipeline / "run_report.json").read_text())
@@ -160,9 +268,11 @@ class FullPipelineTests(unittest.TestCase):
             np.testing.assert_allclose(curated.filter(regex=f"^loss_shap_.*_{end}$").sum(axis=1),
                                        100 - curated[f"pci_calc_{end}"])
         summary = pd.read_csv(pipeline / "10_report/target_summary.csv")
-        self.assertEqual(len(summary), 11)
-        self.assertTrue(summary.original_target.str.endswith(" deduct_end").all())
-        self.assertFalse(summary.original_target.eq("DetRatePerYear").any())
+        self.assertEqual(len(summary), 12)
+        deducts = summary.loc[~summary.original_target.eq("DetRatePerYear")]
+        self.assertEqual(len(deducts), 11)
+        self.assertTrue(deducts.original_target.str.endswith(" deduct_end").all())
+        self.assert_signed_rate_outputs(pipeline, ["PCC"])
         html = (pipeline / "10_report/dashboard.html").read_text()
         qualification = json.loads((pipeline/"11_qualification/qualification.json").read_text())
         self.assertEqual(qualification["status"], "technical_checks_passed")
@@ -198,7 +308,50 @@ class FullPipelineTests(unittest.TestCase):
         self.assertEqual(Path(cfg["cdv_curves"]).read_bytes(), self.curves.read_bytes())
         self.assertNotEqual(Path(cfg["cdv_curves"]), self.curves)
         self.assertEqual(cfg["target_mode"], "deduct_families")
+        self.assertTrue(cfg["include_pci_rate"])
         self.assertEqual(cfg["datarobot"], "off")
+
+    def test_default_full_adds_signed_rate_for_every_surface_on_the_same_group_plan(self):
+        self.settings.pop("targets")
+        self.settings.update(surfaces=["PCC", "APC", "AC_AAC_ACC"],
+            local_model_options={"candidate_ids": ["enet_0.01"], "isolated": False})
+        self.profile.write_text(json.dumps(self.settings))
+        for path in self.raw.glob("*.csv"):
+            source = pd.read_csv(path, dtype={"SectionUniqueID": str})
+            materials = []
+            for surface in ("PCC", "APC", "AC"):
+                frame = source.copy()
+                frame["SectionUniqueID"] = surface + "-" + frame.SectionUniqueID
+                frame["Inspected Surface Type"] = surface
+                if surface != "PCC":
+                    frame["43L deduct"] = frame["64L deduct"]
+                    frame["43L (SqFt)"] = frame["64L (Slabs)"]
+                    frame["InspectedArea (SqFt)"] = 10000
+                materials.append(frame)
+            pd.concat(materials, ignore_index=True).to_csv(path, index=False)
+        self.run_cli("--quiet")
+        pipeline = self.work / "pipeline"
+        self.assert_signed_rate_outputs(pipeline, self.settings["surfaces"])
+        plan = pd.read_csv(pipeline / "07_modeling/partitions.csv")
+        self.assertEqual(len(plan), 10)  # Same source/airfield groups across three surfaces.
+        target_map = pd.read_csv(pipeline / "09_local_models/target_map.csv")
+        self.assertEqual(len(target_map.loc[target_map.original_target.eq("DetRatePerYear")]), 3)
+        qualification = json.loads((pipeline / "11_qualification/qualification.json").read_text())
+        self.assertEqual(qualification["status"], "technical_checks_passed")
+
+    def test_explicit_pci_rate_opt_out_preserves_the_deduct_only_sweep(self):
+        self.settings.update(include_pci_rate=False,
+            local_model_options={"candidate_ids": ["enet_0.01"], "isolated": False})
+        self.profile.write_text(json.dumps(self.settings))
+        self.run_cli("--quiet")
+        pipeline = self.work / "pipeline"
+        summary = pd.read_csv(pipeline / "10_report/target_summary.csv")
+        self.assertEqual(len(summary), 11)
+        self.assertTrue(summary.original_target.str.endswith(" deduct_end").all())
+        self.assertFalse(summary.original_target.eq("DetRatePerYear").any())
+        self.assertFalse((pipeline / "09_local_models/materials/PCC/DetRatePerYear").exists())
+        features = json.loads((pipeline / "09_local_models/materials/PCC/features.json").read_text())["features"]
+        self.assertNotIn("DetRatePerYear", features)
 
     def test_qualification_retains_empty_materials_as_explicit_tasks(self):
         self.settings.update(surfaces=["PCC", "APC", "AC_AAC_ACC"],

@@ -14,13 +14,13 @@ import pandas as pd
 from . import __version__
 from .autorun import external_path
 from .io import read_json, sha256, write_json
-from .model_registry import ID_PATTERN, REGISTRY_VERSION, environment_versions
+from .model_registry import ID_PATTERN, REGISTRY_VERSION, environment_versions, validate_target_kind
 from .model_runtime import ModelRuntime, model_options, runtime_context
 from .pipeline import code_digest
 from .security import Boundary, SafeError, disjoint, reject_links, source_root
 
 
-CHECK_COLUMNS = ["material", "target", "candidate", "feature_set", "rows", "groups", "max_absolute_error", "status"]
+CHECK_COLUMNS = ["material", "target", "target_kind", "candidate", "feature_set", "rows", "groups", "max_absolute_error", "status"]
 
 
 def _read(path, **kwargs):
@@ -44,7 +44,8 @@ def verify_artifacts(pipeline, report):
     return verified
 
 
-def _identity(frame, source, plan, target_column, partition, expected_fold=False):
+def _identity(frame, source, plan, target_column, partition, expected_fold=False, *, target_kind="deduct_total"):
+    validate_target_kind(target_kind)
     required = {"row_id", "group_id", "actual", "weight", "prediction"}
     if expected_fold:
         required.add("fold")
@@ -64,20 +65,22 @@ def _identity(frame, source, plan, target_column, partition, expected_fold=False
         raise SafeError("QUALIFICATION_FOLD_MISMATCH")
     actual = pd.to_numeric(selected[target_column], errors="coerce").to_numpy(float)
     weights = pd.to_numeric(selected.delta_days, errors="coerce").to_numpy(float)
-    if not np.isfinite(actual).all() or (actual < 0).any() or not np.isfinite(weights).all() or (weights <= 0).any():
+    if (not np.isfinite(actual).all() or (target_kind == "deduct_total" and (actual < 0).any())
+            or not np.isfinite(weights).all() or (weights <= 0).any()):
         raise SafeError("QUALIFICATION_TARGET_OR_WEIGHT_INVALID")
     if not np.allclose(actual, frame.actual.to_numpy(float), rtol=1e-12, atol=1e-12):
         raise SafeError("QUALIFICATION_TARGET_MISMATCH")
     if not np.array_equal(weights, frame.weight.to_numpy(float)):
         raise SafeError("QUALIFICATION_WEIGHT_MISMATCH")
     points = frame.prediction.to_numpy(float)
-    if not np.isfinite(points).all() or (points < 0).any():
+    if not np.isfinite(points).all() or (target_kind == "deduct_total" and (points < 0).any()):
         raise SafeError("QUALIFICATION_INVALID_PREDICTIONS")
     return selected
 
 
-def _prediction_check(runtime, artifact, saved, source, plan, target_column, expected_features, target, material, candidate, feature_set):
-    selected = _identity(saved, source, plan, target_column, "holdout")
+def _prediction_check(runtime, artifact, saved, source, plan, target_column, expected_features, target, material, candidate, feature_set,
+                      *, target_kind="deduct_total"):
+    selected = _identity(saved, source, plan, target_column, "holdout", target_kind=target_kind)
     if saved.row_id.duplicated().any():
         raise SafeError("QUALIFICATION_DUPLICATE_PREDICTIONS")
     numeric_target = pd.to_numeric(source[target_column], errors="coerce")
@@ -86,6 +89,11 @@ def _prediction_check(runtime, artifact, saved, source, plan, target_column, exp
         raise SafeError("QUALIFICATION_HOLDOUT_COVERAGE_MISMATCH")
     if artifact.get("fit_partition") != "development" or artifact.get("target") != target:
         raise SafeError("QUALIFICATION_MODEL_PARTITION_OR_TARGET_MISMATCH")
+    # A signed artifact must declare its semantics at both persistence layers.
+    # Legacy deduct artifacts retain their original nonnegative contract.
+    if (artifact.get("target_kind", "deduct_total") != target_kind
+            or getattr(artifact["estimator"], "target_kind", "deduct_total") != target_kind):
+        raise SafeError("QUALIFICATION_TARGET_KIND_MISMATCH")
     if artifact.get("features") != expected_features:
         raise SafeError("QUALIFICATION_FEATURE_MISMATCH")
     from .full_modeling import _feature_guard
@@ -101,7 +109,7 @@ def _prediction_check(runtime, artifact, saved, source, plan, target_column, exp
     predicted, _ = runtime.call("predict", artifact["estimator"], selected[expected_features])
     if not np.allclose(predicted, saved.prediction.to_numpy(float), rtol=1e-12, atol=1e-12):
         raise SafeError("QUALIFICATION_SAVED_PREDICTION_MISMATCH")
-    return {"material": material, "target": target, "candidate": candidate, "feature_set": feature_set,
+    return {"material": material, "target": target, "target_kind": target_kind, "candidate": candidate, "feature_set": feature_set,
             "rows": len(saved), "groups": int(saved.group_id.nunique()),
             "max_absolute_error": float(np.max(abs(predicted-saved.prediction.to_numpy(float)))) if len(saved) else None,
             "status": "passed"}
@@ -179,8 +187,14 @@ def audit_full_run(pipeline, report, cfg, setup, out, *, progress=None, private_
                 if len(matches) != 1:
                     raise SafeError("QUALIFICATION_TARGET_MAP_INVALID")
                 column = matches.original_target.iloc[0]
+                target_kind = "signed_pci_rate" if column == "DetRatePerYear" else "deduct_total"
+                if (summary.get("target_kind", "deduct_total") != target_kind
+                        or matches.iloc[0].get("target_kind", "deduct_total") != target_kind):
+                    raise SafeError("QUALIFICATION_TARGET_KIND_MISMATCH")
                 task_support.append({"material": surface, **{k: summary.get(k) for k in ("target", "status", "valid_target_rows",
-                    "valid_target_groups", "holdout_rows", "holdout_groups", "nonzero_fraction", "mae_skill", "importance_reliable")}})
+                    "valid_target_groups", "holdout_rows", "holdout_groups", "nonzero_fraction", "mae_skill", "rmse_skill",
+                    "selection_metric", "baseline_candidate", "baseline_family", "importance_reliable")},
+                    "original_target": column, "target_kind": target_kind})
                 if not (root/"model.joblib").is_file():
                     continue
                 declared = read_json(models/"materials"/surface/"features.json")
@@ -211,11 +225,11 @@ def audit_full_run(pipeline, report, cfg, setup, out, *, progress=None, private_
                     if "candidate" not in predictions and feature_set == "nonclimate":
                         subset["prediction"] = subset.nonclimate_prediction
                     checks.append(_prediction_check(runtime, artifact, subset, source, plan, column, sets[feature_set],
-                                                    target, surface, candidate, feature_set))
+                                                    target, surface, candidate, feature_set, target_kind=target_kind))
                 oof_path = root/"oof_predictions.csv"
                 if oof_path.is_file():
                     for chunk in pd.read_csv(oof_path, keep_default_na=False, dtype={"group_id": str}, chunksize=20000):
-                        _identity(chunk, source, plan, column, "development", expected_fold=True)
+                        _identity(chunk, source, plan, column, "development", expected_fold=True, target_kind=target_kind)
                         oof_counts[surface] += len(chunk)
     climate = {}
     for surface in cfg["surfaces"]:

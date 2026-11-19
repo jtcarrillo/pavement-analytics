@@ -37,9 +37,12 @@ class StudyReportingTests(unittest.TestCase):
                         'importance_reliable': True}
 
     def test_recomputes_metrics_and_consolidates_without_exposing_groups_in_html(self):
+        self.summary['holdout_rmse'] = 99.
         build_study_report(self.out, [self.summary], {})
         summary = pd.read_csv(self.out / 'target_summary.csv').iloc[0]
         self.assertAlmostEqual(summary.holdout_mae, 1.)
+        self.assertAlmostEqual(summary.holdout_rmse, np.sqrt(2.))
+        self.assertAlmostEqual(summary.baseline_rmse, np.sqrt(31.))
         self.assertAlmostEqual(summary.baseline_mae, 4.5)
         self.assertAlmostEqual(summary.mae_skill, 1 - 1 / 4.5)
         self.assertAlmostEqual(summary.nonclimate_mae, 3.5)
@@ -64,6 +67,87 @@ class StudyReportingTests(unittest.TestCase):
         self.assertIn('table-layout:fixed', html)
         self.assertNotIn('https://', html)
         self.assertNotIn('<script', html)
+        overview = html.split('Which deduct families are most predictable?</h2>', 1)[1].split('</section>', 1)[0]
+        self.assertIn('Weighted holdout RMSE', overview)
+        self.assertIn('<td>1.414</td>', overview)
+        detail = html.split('<section class="target">', 1)[1]
+        self.assertIn('Weighted holdout RMSE', detail)
+        self.assertIn('<td>1.414</td>', detail)
+
+    def _signed_rate_task(self):
+        task = self.out / 'materials/PCC/DetRatePerYear'
+        task.mkdir(parents=True)
+        predictions = pd.DataFrame({
+            'row_id': [1, 2, 3], 'group_id': ['rate_private_1', 'rate_private_2', 'rate_private_2'],
+            'actual': [-4., -2., 0.], 'prediction': [-3., -2., -1.],
+            'baseline_prediction': [-2., -2., -2.], 'nonclimate_prediction': [-2., -1., 0.],
+            'weight': [1., 2., 1.]})
+        predictions.to_csv(task / 'holdout_predictions.csv', index=False)
+        pd.DataFrame({'feature': ['rate_weather'], 'kind': ['feature'], 'is_climate': [True],
+                      'metric': ['rmse'], 'importance_mean': [2.], 'importance_std': [.2],
+                      'repeats': [5], 'reliable': [True]}).to_csv(task / 'importance.csv', index=False)
+        pd.DataFrame([{'family': 'random_forest', 'candidate': 'rf_20', 'feature_set': 'all',
+                       'comparison_status': 'completed', 'cv_mae': 9., 'cv_rmse': 2.75,
+                       'holdout_rmse': np.sqrt(.5), 'mae_skill': .5,
+                       'climate_added_skill': .5, 'climate_added_rmse_skill': .42,
+                       'importance_status': 'completed'}]).to_csv(task / 'family_summary.csv', index=False)
+        return {'material': 'PCC', 'target': 'DetRatePerYear', 'original_target': 'DetRatePerYear',
+                'target_kind': 'signed_pci_rate', 'target_units': 'PCI points/year',
+                'selection_metric': 'mean_interval_weighted_cv_RMSE', 'cv_rmse': 2.75,
+                'status': 'modeled', 'candidate': 'rf_20', 'valid_target_rows': 12,
+                'valid_target_groups': 5, 'nonzero_fraction': 2 / 3, 'importance_reliable': True}
+
+    def test_signed_rate_metrics_units_and_rankings_are_separate_from_deduct_totals(self):
+        rate = self._signed_rate_task()
+        build_study_report(self.out, [self.summary, rate],
+                           {'task_mode': 'original_pipeline', 'metric_weighting': 'interval_days'})
+        summary = pd.read_csv(self.out / 'target_summary.csv').set_index('target')
+        row = summary.loc['DetRatePerYear']
+        self.assertAlmostEqual(row.holdout_mae, .5)
+        self.assertAlmostEqual(row.holdout_rmse, np.sqrt(.5))
+        self.assertAlmostEqual(row.baseline_rmse, np.sqrt(2.))
+        self.assertAlmostEqual(row.rmse_skill, .5)
+        self.assertAlmostEqual(row.climate_added_rmse_skill, 1 - np.sqrt(.5) / np.sqrt(1.5))
+        self.assertEqual(row.target_units, 'PCI points/year')
+        self.assertEqual(row.baseline_kind, 'weighted_mean')
+        self.assertEqual(row.selection_metric, 'mean_interval_weighted_cv_RMSE')
+        self.assertAlmostEqual(row.cv_rmse, 2.75)
+        importance = pd.read_csv(self.out / 'feature_importance.csv').set_index('target')
+        self.assertEqual(importance.loc['DetRatePerYear', 'metric'], 'rmse')
+        self.assertAlmostEqual(importance.loc['DetRatePerYear', 'baseline_relative_importance'], 2 / np.sqrt(2.))
+        predictions = pd.read_csv(self.out / 'predictions.csv')
+        self.assertEqual(predictions.loc[predictions.target.eq('DetRatePerYear'), 'prediction'].tolist(), [-3., -2., -1.])
+        html = (self.out / 'dashboard.html').read_text()
+        rate_overview = html.split('<h2>Signed PCI rate models</h2>', 1)[1].split('</section>', 1)[0]
+        deduct_overview = html.split('<h2>Which deduct families are most predictable?</h2>', 1)[1].split('</section>', 1)[0]
+        self.assertIn('DetRatePerYear', rate_overview)
+        self.assertNotIn('family_example', rate_overview)
+        self.assertNotIn('DetRatePerYear', deduct_overview)
+        self.assertIn('training-derived weighted mean', rate_overview)
+        self.assertIn('training-derived median', deduct_overview)
+        self.assertIn('Weighted holdout RMSE', rate_overview)
+        self.assertIn('<td>0.707</td>', rate_overview)
+        self.assertIn('Observed PCI rate (points/year)', html)
+        self.assertIn('negative values mean deterioration', html)
+        self.assertIn('(PCI_end − PCI_start) × 365 / delta_days', html)
+        self.assertIn('Top predictors (RMSE increase / baseline RMSE)', html)
+        self.assertIn('Top predictors (MAE increase / baseline MAE)', html)
+        self.assertIn('CV weighted RMSE', html)
+        self.assertIn('<td>2.750</td>', html)
+        self.assertIn('Adding climate changed holdout RMSE', html)
+        self.assertNotIn('rate_private_', html)
+
+    def test_rate_only_report_uses_exact_target_name_fallback_without_deduct_ranking(self):
+        rate = self._signed_rate_task()
+        del rate['target_kind']
+        build_study_report(self.out, [rate], {'task_mode': 'original_pipeline', 'metric_weighting': 'interval_days'})
+        html = (self.out / 'dashboard.html').read_text()
+        self.assertIn('<title>Pavement target predictability study</title>', html)
+        self.assertIn('Signed PCI rate models', html)
+        self.assertNotIn('Which deduct families are most predictable?', html)
+        self.assertNotIn('Predictors across deduct families', html)
+        self.assertNotIn('Observed deduct-family total', html)
+        self.assertNotIn('Two-stage conditional-mean diagnostics', html)
 
     def test_failed_candidate_statuses_survive_consolidation_and_are_visible(self):
         leaders = pd.read_csv(self.task/'leaderboard.csv')

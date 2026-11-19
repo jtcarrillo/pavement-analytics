@@ -37,6 +37,35 @@ class AdditiveSplineTests(unittest.TestCase):
                 np.testing.assert_allclose(fitted.predict(X), 9., rtol=0, atol=1e-12)
                 np.testing.assert_allclose(uniform.predict(X), 5., rtol=0, atol=1e-12)
 
+    def test_signed_rate_preserves_negative_weighted_predictions_and_serialization(self):
+        X = pd.DataFrame({"constant": np.ones(48)})
+        y = np.tile([-10., 10.], 24)
+        weights = np.where(y < 0, 9., 1.)
+        for name, model in build_candidates(requested=SPLINE_IDS).items():
+            with self.subTest(candidate=name):
+                signed = clone(model).set_params(target_kind="signed_pci_rate")
+                fitted = clone(signed).fit(X, y, sample_weight=weights)
+                prediction = fitted.predict(X)
+                np.testing.assert_allclose(prediction, -8., rtol=0, atol=1e-12)
+                components = fitted.predict_components(X)
+                np.testing.assert_allclose(components["intercept"]+components["terms"].sum(axis=1),
+                                           prediction, rtol=0, atol=1e-12)
+                self.assertEqual(fitted.training_details_["target_kind"], "signed_pci_rate")
+                path = self.root/(name+"-signed.joblib")
+                joblib.dump(fitted, path)
+                np.testing.assert_allclose(joblib.load(path).predict(X), prediction, rtol=0, atol=1e-12)
+                with self.assertRaisesRegex(SafeError, "INVALID_WEIGHTED_MODEL_INPUT"):
+                    clone(model).fit(X, y, sample_weight=weights)
+
+    def test_unknown_target_kind_and_old_nonnegative_artifact(self):
+        X = pd.DataFrame({"x": np.arange(10.)})
+        with self.assertRaisesRegex(SafeError, "INVALID_MODEL_TARGET_KIND"):
+            AdditiveSplineRegressor(target_kind="unknown").fit(X, np.arange(10.))
+        fitted = AdditiveSplineRegressor().fit(X, np.arange(10.))
+        expected = fitted.predict(X)
+        del fitted.target_kind
+        np.testing.assert_array_equal(fitted.predict(X), expected)
+
     def test_every_configuration_clones_serializes_and_handles_stress(self):
         _, stress, _, plan, _, _ = records(profile="smoke")
         data = stress.loc[stress.material.eq("PCC")].dropna(subset=["level_smooth"])

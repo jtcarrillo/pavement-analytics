@@ -19,7 +19,7 @@ from pavement_analytics.model_runtime import (ModelRuntime, ModelTimeout, check_
 from pavement_analytics.model_tasks import task_key, verified_task
 from pavement_analytics.progress import FullProgress
 from pavement_analytics.security import Boundary, SafeError, source_root
-from pavement_analytics.study_modeling import MedianRegressor, search_levels
+from pavement_analytics.study_modeling import MedianRegressor, make_partitions, search_levels
 from pavement_analytics.study_reporting import build_study_report
 from pavement_analytics.synthetic_benchmark import FEATURES, CLIMATE_FEATURES, records
 from temp_support import temporary_directory
@@ -62,6 +62,19 @@ class RefitFailureModel(RegressorMixin, BaseEstimator):
 
     def predict(self, X):
         return np.full(len(X), self.mean_)
+
+
+class FixedSignedPrediction(RegressorMixin, BaseEstimator):
+    target_kind = "signed_pci_rate"
+
+    def __init__(self, value):
+        self.value = value
+
+    def fit(self, X, y, sample_weight=None):
+        return self
+
+    def predict(self, X):
+        return np.full(len(X), self.value)
 
 
 class ComparisonTests(unittest.TestCase):
@@ -109,6 +122,44 @@ class ComparisonTests(unittest.TestCase):
         self.assertNotIn("reliable", importance)
         self.assertEqual(set(importance.loc[importance.family.eq("two_stage"), "metric"]),
                          {"mae", "occurrence_brier", "positive_severity_mae"})
+
+    def test_signed_family_selection_uses_rmse_and_exports_weighted_relative_skills(self):
+        table = pd.DataFrame({"row_id": range(120), "group_id": np.repeat([f"SYN{i:03d}" for i in range(12)], 10),
+            "rate": np.tile([0.]*9+[-10.], 12), "delta_days": np.ones(120)*365,
+            "x": np.tile(np.arange(10.), 12), "climate": np.repeat(np.arange(12.), 10)})
+        plan = make_partitions(table, folds=3)
+        out = self.root/"signed"
+        pool = {"mae_choice": FixedSignedPrediction(0.), "rmse_choice": FixedSignedPrediction(-1.)}
+        with patch("pavement_analytics.study_modeling.candidates", return_value=pool):
+            summary = search_levels(table, ["x", "climate"], "rate", out, plan, ["climate"],
+                weight_column="delta_days", target_kind="signed_pci_rate", model_options={"isolated": False})
+        self.assertEqual(summary["candidate"], "mean")
+        self.assertEqual(summary["comparison_failure_count"], 0)
+        comparisons = pd.read_csv(out/"candidate_comparisons.csv")
+        families = pd.read_csv(out/"family_summary.csv")
+        predictions = pd.read_csv(out/"candidate_predictions.csv")
+        for feature_set in ("all", "nonclimate"):
+            rows = comparisons.loc[comparisons.feature_set.eq(feature_set)].set_index("candidate")
+            self.assertLess(rows.loc["mae_choice", "cv_mae"], rows.loc["rmse_choice", "cv_mae"])
+            self.assertGreater(rows.loc["mae_choice", "cv_rmse"], rows.loc["rmse_choice", "cv_rmse"])
+            representative = families.loc[families.feature_set.eq(feature_set) & families.family.eq("custom")]
+            self.assertEqual(representative.candidate.tolist(), ["rmse_choice"])
+            self.assertEqual(set(rows.target_kind), {"signed_pci_rate"})
+            self.assertTrue(rows.comparison_status.eq("completed").all())
+        for row in comparisons.itertuples():
+            saved = predictions.loc[predictions.candidate.eq(row.candidate) & predictions.feature_set.eq(row.feature_set)]
+            rmse = np.sqrt(np.average((saved.actual-saved.prediction)**2, weights=saved.weight))
+            self.assertAlmostEqual(row.holdout_rmse, rmse, delta=1e-12)
+            self.assertAlmostEqual(row.baseline_rmse, 3., delta=1e-12)
+            self.assertAlmostEqual(row.rmse_skill, 1-rmse/3., delta=1e-12)
+            self.assertAlmostEqual(row.cv_rmse_skill, 1-row.cv_rmse/3., delta=1e-12)
+            artifact = joblib.load(out/row.model_path)
+            self.assertEqual(artifact["target_kind"], "signed_pci_rate")
+            self.assertEqual(artifact["selection_metric"], "mean_interval_weighted_cv_RMSE")
+            X = table.set_index("row_id").loc[saved.row_id, artifact["features"]]
+            np.testing.assert_allclose(artifact["estimator"].predict(X), saved.prediction, rtol=0, atol=1e-12)
+        importance = pd.read_csv(out/"family_importance.csv")
+        self.assertEqual(set(importance.metric), {"rmse"})
 
     def test_family_choices_and_fitted_predictions_ignore_holdout_labels(self):
         self.search("before")
