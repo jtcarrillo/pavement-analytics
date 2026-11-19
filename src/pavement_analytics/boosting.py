@@ -8,7 +8,8 @@ import pandas as pd
 from sklearn.base import BaseEstimator, RegressorMixin
 from sklearn.utils.validation import check_is_fitted
 
-from .model_registry import XGBOOST_MAX_VERSION, XGBOOST_MIN_VERSION, dependency_version
+from .model_registry import (XGBOOST_MAX_VERSION, XGBOOST_MIN_VERSION, dependency_version,
+                             validate_target_kind)
 from .security import SafeError
 
 
@@ -48,10 +49,12 @@ class GroupedXGBoostRegressor(RegressorMixin, BaseEstimator):
     Prediction has no access to stopping, outer-validation or holdout labels.
     """
 
-    def __init__(self, parameters, early_stopping_rounds=None, stopping_fraction=0.2):
+    def __init__(self, parameters, early_stopping_rounds=None, stopping_fraction=0.2,
+                 target_kind="deduct_total"):
         self.parameters = parameters
         self.early_stopping_rounds = early_stopping_rounds
         self.stopping_fraction = stopping_fraction
+        self.target_kind = target_kind
 
     def fit(self, X, y, sample_weight=None):
         if self.early_stopping_rounds is not None:
@@ -60,11 +63,13 @@ class GroupedXGBoostRegressor(RegressorMixin, BaseEstimator):
 
     def fit_grouped(self, X, y, sample_weight=None, groups=None):
         from .study_modeling import _estimator
+        target_kind = validate_target_kind(self.target_kind)
         model_class = require_xgboost()
         y = np.asarray(y, dtype=float)
         weights = np.ones(len(y)) if sample_weight is None else np.asarray(sample_weight, dtype=float)
         if (not isinstance(X, pd.DataFrame) or not len(y) or y.shape != (len(X),)
-                or weights.shape != y.shape or not np.isfinite(y).all() or (y < 0).any()
+                or weights.shape != y.shape or not np.isfinite(y).all()
+                or (target_kind == "deduct_total" and (y < 0).any())
                 or not np.isfinite(weights).all() or (weights <= 0).any()):
             raise SafeError("INVALID_WEIGHTED_MODEL_INPUT")
         if groups is not None:
@@ -83,7 +88,8 @@ class GroupedXGBoostRegressor(RegressorMixin, BaseEstimator):
             raise SafeError("UNSUPPORTED_CPU_BOOSTING_CONFIGURATION")
         iterations = parameters["n_estimators"]
         groups_all = sorted(group_series.unique()) if group_series is not None else []
-        details = {"iteration_policy": "fixed_budget", "iterations": iterations,
+        details = {"iteration_policy": "fixed_budget", "iterations": iterations, "target_kind": target_kind,
+                   "stopping_metric": parameters.get("eval_metric"),
                    "probe_iterations": 0, "fitting_groups": groups_all, "stopping_groups": [],
                    "refit_groups": groups_all, "fitting_rows": len(y), "stopping_rows": 0,
                    "fitting_weight_sum": float(weights.sum()), "stopping_weight_sum": 0.,
@@ -100,7 +106,7 @@ class GroupedXGBoostRegressor(RegressorMixin, BaseEstimator):
             fitting, stopping = grouped_stopping_split(group_series, self.stopping_fraction, parameters["random_state"])
             # Reuse precisely the same feature path, fitting it only on the
             # inner fitting groups. The stopping table is transformed once.
-            preprocessor = _estimator(model_class(**parameters)).estimator[:-1]
+            preprocessor = _estimator(model_class(**parameters), target_kind=target_kind).estimator[:-1]
             train_X = preprocessor.fit_transform(X.iloc[fitting], y[fitting])
             stop_X = preprocessor.transform(X.iloc[stopping])
             probe = model_class(**parameters, early_stopping_rounds=self.early_stopping_rounds)
@@ -117,7 +123,8 @@ class GroupedXGBoostRegressor(RegressorMixin, BaseEstimator):
             self.stopping_preprocessor_ = preprocessor
             self.stopping_evaluations_ = probe.evals_result()
         parameters["n_estimators"] = iterations
-        self.estimator_ = _estimator(model_class(**parameters)).fit(X, y, sample_weight=weights)
+        self.estimator_ = _estimator(model_class(**parameters), target_kind=target_kind).fit(
+            X, y, sample_weight=weights)
         self.training_details_ = details
         self.n_features_in_ = X.shape[1]
         self.feature_names_in_ = np.asarray(X.columns, dtype=object)

@@ -5,7 +5,7 @@ does not install packages, load data or probe an external training service.
 """
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 import importlib.metadata
 import importlib.util
 import json
@@ -18,38 +18,51 @@ from packaging.version import InvalidVersion, Version
 from .security import SafeError
 
 
-REGISTRY_VERSION = 7
+REGISTRY_VERSION = 8
 XGBOOST_MIN_VERSION, XGBOOST_MAX_VERSION = "3.1.3", "3.2"
 LIGHTGBM_MIN_VERSION, LIGHTGBM_MAX_VERSION = "4.6.0", "4.7"
 BASELINE_ID = "median"
+TARGET_KINDS = ("deduct_total", "signed_pci_rate")
+BASELINE_IDS = {"median", "mean"}
 ID_PATTERN = re.compile(r"[A-Za-z][A-Za-z0-9_.-]{0,79}")
+
+
+def validate_target_kind(target_kind):
+    if not isinstance(target_kind, str) or target_kind not in TARGET_KINDS:
+        raise SafeError("INVALID_MODEL_TARGET_KIND")
+    return target_kind
+
+
+def _point_estimator(model_class, parameters):
+    from .study_modeling import _estimator
+    parameters = parameters.copy()
+    target_kind = parameters.pop("target_kind", "deduct_total")
+    return _estimator(model_class(**parameters), target_kind=target_kind)
 
 
 def _elastic(parameters):
     from sklearn.linear_model import ElasticNet
-    from .study_modeling import _estimator
-    return _estimator(ElasticNet(**parameters))
+    return _point_estimator(ElasticNet, parameters)
 
 
 def _forest(parameters):
     from sklearn.ensemble import RandomForestRegressor
-    from .study_modeling import _estimator
-    return _estimator(RandomForestRegressor(**parameters))
+    return _point_estimator(RandomForestRegressor, parameters)
 
 
 def _extra_trees(parameters):
     from sklearn.ensemble import ExtraTreesRegressor
-    from .study_modeling import _estimator
-    return _estimator(ExtraTreesRegressor(**parameters))
+    return _point_estimator(ExtraTreesRegressor, parameters)
 
 
 def _xgboost(parameters):
     from .boosting import GroupedXGBoostRegressor, require_xgboost
     require_xgboost()
     parameters = parameters.copy()
+    target_kind = parameters.pop("target_kind", "deduct_total")
     rounds = parameters.pop("early_stopping_rounds")
     fraction = parameters.pop("stopping_fraction")
-    return GroupedXGBoostRegressor(parameters, rounds, fraction)
+    return GroupedXGBoostRegressor(parameters, rounds, fraction, target_kind=target_kind)
 
 
 def dependency_version(package, minimum=None, maximum=None):
@@ -72,9 +85,10 @@ def _lightgbm(parameters):
     from .lightgbm_model import GroupedLightGBMRegressor, require_lightgbm
     require_lightgbm()
     parameters = parameters.copy()
+    target_kind = parameters.pop("target_kind", "deduct_total")
     rounds = parameters.pop("early_stopping_rounds")
     fraction = parameters.pop("stopping_fraction")
-    return GroupedLightGBMRegressor(parameters, rounds, fraction)
+    return GroupedLightGBMRegressor(parameters, rounds, fraction, target_kind=target_kind)
 
 
 def _additive_spline(parameters):
@@ -112,13 +126,16 @@ class CandidateSpec:
     max_workers: int = 1
     minimum_version: str | None = None
     maximum_version: str | None = None
+    supported_target_kinds: tuple[str, ...] = TARGET_KINDS
 
     def metadata(self):
         if (not isinstance(self.candidate, str) or not ID_PATTERN.fullmatch(self.candidate)
-                or self.candidate == BASELINE_ID or not isinstance(self.family, str) or not self.family
+                or self.candidate in BASELINE_IDS or not isinstance(self.family, str) or not self.family
                 or not isinstance(self.supports_sample_weight, bool) or not callable(self.factory)
                 or isinstance(self.max_workers, bool) or not isinstance(self.max_workers, int) or self.max_workers < 1
-                or not isinstance(self.import_name, str) or not self.import_name):
+                or not isinstance(self.import_name, str) or not self.import_name
+                or not isinstance(self.supported_target_kinds, tuple) or not self.supported_target_kinds
+                or not set(self.supported_target_kinds) <= set(TARGET_KINDS)):
             raise SafeError("INVALID_MODEL_CANDIDATE_DEFINITION")
         try:
             for bound in (self.minimum_version, self.maximum_version):
@@ -150,14 +167,16 @@ class CandidateSpec:
                 "required_package": self.required_package, "supports_sample_weight": self.supports_sample_weight,
                 "prediction_meaning": self.prediction_meaning, "max_workers": self.max_workers,
                 "availability": availability, "installed_version": installed,
-                "minimum_version": self.minimum_version, "maximum_version": self.maximum_version}
+                "minimum_version": self.minimum_version, "maximum_version": self.maximum_version,
+                "supported_target_kinds": list(self.supported_target_kinds)}
 
 
-def candidate_specs(seed: int = 42):
+def candidate_specs(seed: int = 42, target_kind="deduct_total"):
     """Fresh definitions preserve old candidates and bound each new grid."""
     if isinstance(seed, bool) or not isinstance(seed, int) or seed < 0:
         raise SafeError("INVALID_MODEL_SEED")
-    return (
+    validate_target_kind(target_kind)
+    definitions = (
         *(CandidateSpec(f"enet_{alpha}", "elastic_net", {"alpha": alpha, "l1_ratio": 0.5,
            "max_iter": 20000, "random_state": seed}, _elastic) for alpha in (0.01, 0.1)),
         *(CandidateSpec(f"rf_{leaf}", "random_forest", {"n_estimators": 100, "min_samples_leaf": leaf,
@@ -198,30 +217,51 @@ def candidate_specs(seed: int = 42):
             "severity_estimators": 200, "severity_depth": 12, "severity_max_features": 1.0,
             "severity_criterion": "squared_error", "severity_bootstrap": False, "n_jobs": 1,
             "min_class_rows": 5, "min_class_groups": 2, "min_positive_rows": 10, "min_positive_groups": 2},
-           _two_stage, prediction_meaning="conditional mean: P(Y>0|X) times positive conditional mean; not a median")
+           _two_stage, prediction_meaning="conditional mean: P(Y>0|X) times positive conditional mean; not a median",
+           supported_target_kinds=("deduct_total",))
           for c in (0.1, 1.0) for leaf in (2, 10)),
     )
+    if target_kind == "deduct_total":
+        return definitions
+    signed = []
+    for spec in definitions:
+        if target_kind not in spec.supported_target_kinds:
+            signed.append(spec)
+            continue
+        parameters = {**spec.parameters, "target_kind": target_kind}
+        if spec.family == "xgboost":
+            parameters["eval_metric"] = "rmse"
+        elif spec.family == "lightgbm":
+            parameters["metric"] = "rmse"
+        signed.append(replace(spec, parameters=parameters,
+                      prediction_meaning="signed PCI change per year; negative means deterioration"))
+    return tuple(signed)
 
 
-def baseline_metadata():
-    return {"candidate": BASELINE_ID, "family": "weighted_median", "parameters": {},
+def baseline_metadata(target_kind="deduct_total"):
+    validate_target_kind(target_kind)
+    signed = target_kind == "signed_pci_rate"
+    return {"candidate": "mean" if signed else BASELINE_ID,
+            "family": "weighted_mean" if signed else "weighted_median", "parameters": {},
             "required_package": "base", "supports_sample_weight": True,
-            "prediction_meaning": "training weighted-median constant", "max_workers": 1,
-            "availability": "available"}
+            "prediction_meaning": "training weighted-mean constant" if signed else "training weighted-median constant",
+            "max_workers": 1, "availability": "available", "target_kind": target_kind,
+            "supported_target_kinds": list(TARGET_KINDS)}
 
 
-def candidate_catalog(seed=42):
-    return [baseline_metadata(), *[spec.metadata() for spec in candidate_specs(seed)]]
+def candidate_catalog(seed=42, target_kind="deduct_total"):
+    return [baseline_metadata(target_kind), *[dict(spec.metadata(), target_kind=target_kind)
+            for spec in candidate_specs(seed, target_kind)]]
 
 
-def metadata_for(candidate: str, seed=42):
-    for entry in candidate_catalog(seed):
+def metadata_for(candidate: str, seed=42, target_kind="deduct_total"):
+    for entry in candidate_catalog(seed, target_kind):
         if entry["candidate"] == candidate:
             return entry
     return {"candidate": candidate, "family": "custom", "parameters": {},
             "required_package": "custom", "supports_sample_weight": True,
             "prediction_meaning": "custom nonnegative point estimate", "max_workers": 1,
-            "availability": "available"}
+            "availability": "available", "target_kind": target_kind}
 
 
 class CandidateCollection(dict):
@@ -232,20 +272,24 @@ class CandidateCollection(dict):
         self.diagnostics = {}
 
 
-def build_candidates(seed=42, requested=None, *, specs=None):
-    definitions = tuple(candidate_specs(seed) if specs is None else specs)
+def build_candidates(seed=42, requested=None, *, specs=None, target_kind="deduct_total"):
+    validate_target_kind(target_kind)
+    definitions = tuple(candidate_specs(seed, target_kind) if specs is None else specs)
     names = [entry.candidate for entry in definitions]
     if len(set(names)) != len(names):
         raise SafeError("DUPLICATE_MODEL_CANDIDATE_ID")
     if requested is not None:
         if (not isinstance(requested, (list, tuple)) or any(not isinstance(n, str) for n in requested)
-                or len(requested) != len(set(requested)) or not set(requested) <= set(names)|{BASELINE_ID}):
+                or len(requested) != len(set(requested))
+                or not set(requested) <= set(names)|{baseline_metadata(target_kind)["candidate"]}):
             raise SafeError("UNKNOWN_OR_DUPLICATE_MODEL_CANDIDATE")
         definitions = tuple(spec for spec in definitions if spec.candidate in requested)
     result = CandidateCollection()
     for spec in definitions:
-        record = spec.metadata()
-        if not spec.supports_sample_weight:
+        record = dict(spec.metadata(), target_kind=target_kind)
+        if target_kind not in spec.supported_target_kinds:
+            record.update(candidate_status="ineligible_target", error_code="MODEL_TARGET_KIND_UNSUPPORTED")
+        elif not spec.supports_sample_weight:
             record.update(candidate_status="unsupported", error_code="MODEL_SAMPLE_WEIGHTS_REQUIRED")
         elif record["availability"] == "unsupported":
             record.update(candidate_status="unsupported", error_code="MODEL_DEPENDENCY_VERSION_UNSUPPORTED")
@@ -259,7 +303,7 @@ def build_candidates(seed=42, requested=None, *, specs=None):
                 result.diagnostics[spec.candidate] = traceback.format_exc()
                 record.update(candidate_status="failed_construct", error_code="MODEL_CONSTRUCTION_FAILED")
         result.entries.append(record)
-        if requested is not None and record["candidate_status"] != "ready":
+        if requested is not None and record["candidate_status"] not in {"ready", "ineligible_target"}:
             raise SafeError(record["error_code"])
     return result
 

@@ -20,12 +20,13 @@ from pavement_analytics.cli import main
 from pavement_analytics.full_modeling import consolidate_full_models, run_full_models
 from pavement_analytics.io import sha256, write_json
 from pavement_analytics.model_registry import environment_versions
+from pavement_analytics.model_runtime import ModelRuntime, model_options
 from pavement_analytics.model_tasks import verified_task
 from pavement_analytics.original.common import Run
 from pavement_analytics.pipeline import code_digest
 from pavement_analytics.qualification_cli import qualification_command
-from pavement_analytics.release_qualification import _usage, release_fixture
-from pavement_analytics.run_qualification import _identity, audit_full_run, qualify_saved_run, verify_artifacts
+from pavement_analytics.release_qualification import _usage, _parity, release_fixture
+from pavement_analytics.run_qualification import _identity, _prediction_check, audit_full_run, qualify_saved_run, verify_artifacts
 from pavement_analytics.security import SafeError, source_root
 from temp_support import temporary_directory
 import test_full_modeling as modeling_fixtures
@@ -60,6 +61,63 @@ class QualificationIdentityTests(unittest.TestCase):
         with self.assertRaisesRegex(SafeError, "FOLD_MISMATCH"):
             _identity(saved, self.source, self.plan, "observed", "development", expected_fold=True)
 
+    def test_signed_identity_accepts_negative_zero_and_positive_rates_without_changing_weights(self):
+        for actual, predicted in ((-3., -4.), (0., 0.), (2., 1.)):
+            with self.subTest(actual=actual):
+                source = self.source.copy(); source.loc[10, "observed"] = actual
+                saved = self.saved.assign(actual=actual, prediction=predicted)
+                selected = _identity(saved, source, self.plan, "observed", "holdout", target_kind="signed_pci_rate")
+                self.assertEqual(selected.loc[10, "observed"], actual)
+                self.assertEqual(selected.loc[10, "delta_days"], 120)
+        with self.assertRaisesRegex(SafeError, "TARGET_OR_WEIGHT_INVALID"):
+            _identity(self.saved.assign(actual=-3.), self.source.assign(observed=-3.),
+                      self.plan, "observed", "holdout")
+
+    def test_signed_identity_still_rejects_nonfinite_values_and_nonpositive_weights(self):
+        for actual, predicted, weight, code in ((np.nan, 0., 120., "TARGET_OR_WEIGHT_INVALID"),
+                (np.inf, 0., 120., "TARGET_OR_WEIGHT_INVALID"), (-3., np.inf, 120., "INVALID_PREDICTIONS"),
+                (-3., np.nan, 120., "INVALID_PREDICTIONS"), (-3., -2., 0., "TARGET_OR_WEIGHT_INVALID")):
+            with self.subTest(actual=actual, prediction=predicted, weight=weight):
+                source = self.source.copy(); source.loc[10, ["observed", "delta_days"]] = [actual, weight]
+                saved = self.saved.assign(actual=actual, prediction=predicted, weight=weight)
+                with self.assertRaisesRegex(SafeError, code):
+                    _identity(saved, source, self.plan, "observed", "holdout", target_kind="signed_pci_rate")
+
+    def test_persisted_signed_model_replays_negative_predictions_in_both_runtime_modes(self):
+        from pavement_analytics.study_modeling import MeanRegressor
+        temporary = temporary_directory(); self.addCleanup(temporary.cleanup)
+        root = Path(temporary.name)
+        estimator = MeanRegressor().fit(pd.DataFrame({"PCI_start": [80.]}), np.array([-4.]), sample_weight=np.array([800.]))
+        artifact = {"estimator": estimator, "target": "rate_pci", "target_kind": "signed_pci_rate",
+                    "features": ["PCI_start"], "fit_partition": "development"}
+        joblib.dump(artifact, root/"signed.joblib")
+        source = self.source.assign(observed=-3., PCI_start=80.)
+        saved = self.saved.assign(actual=-3., prediction=-4.)
+        for isolated in (False, True):
+            with self.subTest(isolated=isolated):
+                out = root/str(isolated); out.mkdir()
+                with ModelRuntime(out, model_options({"isolated": isolated})) as runtime:
+                    checked = _prediction_check(runtime, joblib.load(root/"signed.joblib"), saved, source, self.plan,
+                        "observed", ["PCI_start"], "rate_pci", "PCC", "mean", "all", target_kind="signed_pci_rate")
+                    self.assertEqual(runtime.fit_calls, 0)
+                self.assertEqual(checked["status"], "passed")
+                self.assertEqual(checked["target_kind"], "signed_pci_rate")
+                self.assertEqual(checked["max_absolute_error"], 0.)
+
+    def test_signed_replay_rejects_missing_or_mismatched_artifact_semantics(self):
+        source = self.source.assign(observed=-3., PCI_start=80.)
+        saved = self.saved.assign(actual=-3., prediction=-4.)
+        for bundle_kind, estimator_kind in ((None, "signed_pci_rate"), ("deduct_total", "signed_pci_rate"),
+                                            ("signed_pci_rate", "deduct_total")):
+            with self.subTest(bundle_kind=bundle_kind, estimator_kind=estimator_kind):
+                artifact = {"estimator": SimpleNamespace(target_kind=estimator_kind), "target": "rate_pci",
+                            "features": ["PCI_start"], "fit_partition": "development"}
+                if bundle_kind is not None:
+                    artifact["target_kind"] = bundle_kind
+                with self.assertRaisesRegex(SafeError, "TARGET_KIND_MISMATCH"):
+                    _prediction_check(None, artifact, saved, source, self.plan, "observed", ["PCI_start"],
+                        "rate_pci", "PCC", "mean", "all", target_kind="signed_pci_rate")
+
 
 class FullRunQualificationTests(unittest.TestCase):
     @classmethod
@@ -70,6 +128,15 @@ class FullRunQualificationTests(unittest.TestCase):
         cls.template = fixture.pipeline
         cls.cfg = {**fixture.cfg, "local_model_options": {"candidate_ids": ["enet_0.01"], "isolated": False}}
         cls.report = copy.deepcopy(fixture.report)
+        # Mixed-target qualification exercises signed rates beside unchanged deduct tasks.
+        rate = -1. - fixture.frame.MeanTempC_1980_present / 4.
+        fixture.frame["PCI_end"] = fixture.frame.PCI_start + rate * fixture.frame.delta_days / 365.
+        fixture.frame["DetRatePerYear"] = (fixture.frame.PCI_end - fixture.frame.PCI_start) * 365. / fixture.frame.delta_days
+        fixture.frame.to_csv(fixture.modeldir/"PCC.csv", index=False)
+        if "DetRatePerYear" not in set(fixture.feature_audit.column):
+            fixture.feature_audit = pd.concat([fixture.feature_audit, pd.DataFrame([
+                {"column": "DetRatePerYear", "disposition": "TARGET", "reason": "generated signed rate"}])])
+        fixture.feature_audit.to_csv(fixture.modeldir/"PCC_feature_audit.csv", index=False)
         run_full_models(cls.template, cls.report, cls.cfg)
         consolidate_full_models(cls.template/"09_local_models", qualification_link=True)
         names = ["01_split", "07_partitions", "08_model_backend", "09_local_models", "10_report"]
@@ -114,6 +181,29 @@ class FullRunQualificationTests(unittest.TestCase):
         self.assertNotIn("private_data_declaration", result["remaining_release_gates"])
         self.assertEqual(result["release_gate"], "pending_private_review")
         self.assertTrue(all(p.is_file() for p in files))
+        rate = next(item for item in result["task_support"] if item["original_target"] == "DetRatePerYear")
+        self.assertEqual(rate["target_kind"], "signed_pci_rate")
+        self.assertEqual(rate["baseline_candidate"], "mean")
+        checks = pd.read_csv(self.root/"qualification/prediction_checks.csv")
+        self.assertTrue(checks.target_kind.eq("signed_pci_rate").any())
+        rate_root = self.pipeline/"09_local_models/materials/PCC"/rate["target"]
+        signed_predictions = pd.read_csv(rate_root/"candidate_predictions.csv")
+        self.assertEqual(set(signed_predictions.candidate), {"mean", "enet_0.01"})
+        self.assertTrue(signed_predictions.actual.lt(0).all())
+        self.assertTrue(signed_predictions.prediction.lt(0).all())
+        source = pd.read_csv(self.pipeline/"07_modeling/partitioned/PCC.csv")
+        mapping = pd.read_csv(self.pipeline/"09_local_models/row_map.csv")
+        source["row_id"] = mapping.loc[mapping.material.eq("PCC")].sort_values("model_csv_row").row_id.to_numpy()
+        plan = pd.read_csv(self.pipeline/"09_local_models/partitions.csv", dtype={"group_id": str})
+        self.assertGreaterEqual(_parity(rate_root, source, plan)["candidate_models_checked"], 4)
+
+    def test_signed_task_provenance_is_checked_even_when_hashes_match(self):
+        path = self.pipeline/"09_local_models/target_map.csv"
+        targets = pd.read_csv(path)
+        targets.loc[targets.original_target.eq("DetRatePerYear"), "target_kind"] = "deduct_total"
+        targets.to_csv(path, index=False); self.restamp(path)
+        with self.assertRaisesRegex(SafeError, "TARGET_KIND_MISMATCH"):
+            self.audit()
 
     def test_hash_verification_precedes_model_deserialization(self):
         path = next(self.pipeline.rglob("candidate_models/*.joblib"))
@@ -200,6 +290,36 @@ class ReleaseQualificationTests(unittest.TestCase):
     def setUp(self):
         temporary = temporary_directory(); self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name)
+
+    def test_saved_model_parity_and_family_selection_follow_target_kind(self):
+        from pavement_analytics.study_modeling import MeanRegressor, MedianRegressor
+        data = pd.DataFrame({"row_id": [10], "PCI_start": [80.], "delta_days": [120.]})
+        plan = pd.DataFrame({"group_id": ["001", "002"], "partition": ["holdout", "development"]})
+        for kind, model_class, sign, selected in (("signed_pci_rate", MeanRegressor, -1., "second"),
+                                                ("deduct_total", MedianRegressor, 1., "first")):
+            with self.subTest(target_kind=kind):
+                out = self.root/kind; out.mkdir()
+                comparisons, predictions = [], []
+                for candidate, point, mae, rmse in (("first", 2.*sign, 1., 3.), ("second", 4.*sign, 2., 2.)):
+                    model = model_class().fit(data[["PCI_start"]], np.array([point]), sample_weight=np.array([120.]))
+                    joblib.dump({"estimator": model, "target_kind": kind, "features": ["PCI_start"],
+                                 "fit_partition": "development"}, out/(candidate+".joblib"))
+                    comparisons.append({"candidate": candidate, "feature_set": "all", "family": "generated",
+                        "comparison_status": "completed", "target_kind": kind, "model_path": candidate+".joblib",
+                        "cv_mae": mae, "cv_rmse": rmse})
+                    predictions.append({"candidate": candidate, "feature_set": "all", "row_id": 10,
+                        "group_id": "001", "prediction": point, "weight": 120.})
+                pd.DataFrame(comparisons).to_csv(out/"candidate_comparisons.csv", index=False)
+                pd.DataFrame(predictions).to_csv(out/"candidate_predictions.csv", index=False)
+                family = pd.DataFrame([{"candidate": selected, "family": "generated", "feature_set": "all",
+                                        "comparison_status": "completed", "target_kind": kind}])
+                family.to_csv(out/"family_summary.csv", index=False)
+                pd.DataFrame(columns=["repeats"]).to_csv(out/"family_importance.csv", index=False)
+                self.assertEqual(_parity(out, data, plan), {"candidate_models_checked": 2, "family_rows": 1})
+                family["candidate"] = "first" if selected == "second" else "second"
+                family.to_csv(out/"family_summary.csv", index=False)
+                with self.assertRaisesRegex(SafeError, "FAMILY_SELECTION_MISMATCH"):
+                    _parity(out, data, plan)
 
     def test_complete_fixture_matrix_and_artifact_parity_with_selected_candidate(self):
         events = []

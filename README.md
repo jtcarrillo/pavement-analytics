@@ -1,7 +1,7 @@
 # Pavement Analytics
 
 Generic Python tools for Pavement Condition Index (PCI), deduct values, and PAVER
-inspection exports. Version 0.5.8 provides a runnable curation and analysis
+inspection exports. Version 0.6.0 provides a runnable curation and analysis
 foundation. All operational inputs, configuration, provenance, fitted models,
 and results belong in a separate private workspace.
 
@@ -10,7 +10,9 @@ and results belong in a separate private workspace.
 - CSV, TSV and first-worksheet XLSX/XLSM ingestion; text identifiers remain text.
 - Guarded, auditable cell corrections without altering the source exports.
 - Surface classification, rejection accounting and consecutive inspection pairs.
-- A 365-day minimum interval by default; increases and construction reset pairing.
+- Workflow-specific interval rules: the original `full` workflow defaults to a
+  one-day minimum; the separate `analyze` workflow defaults to 365 days.
+  Increases and construction reset pairing.
 - Deduct-family growth targets and missing/invalid deduct checks.
 - Curve-driven PCI calculations and an exact Shapley library function. Approved
   correction curves must be supplied privately; no standard tables are bundled.
@@ -30,6 +32,8 @@ and results belong in a separate private workspace.
   with positive-only ExtraTrees means, with separate component diagnostics.
 - Full/study runs save every completed candidate, compare independent family
   selections and explain predictors, climate blocks and correlated blocks.
+- Full runs include signed annual PCI deterioration rate per surface alongside
+  end-inspection deduct totals, with rate selection by weighted CV RMSE.
 - Model fit budgets, candidate/fold progress, process deadlines and verified
   completed-target checkpoints support bounded, interruptible model sweeps.
 - Immutable run outputs, file hashes and verified resume.
@@ -40,9 +44,9 @@ and results belong in a separate private workspace.
 
 The `full` command restores the original inspection-pair pipeline, including
 its complete ERA5 calculations, distress preparation, PCI reconstruction and
-Shapley decomposition, then runs our own local models for each deduct-family
-total. DataRobot is retired; no SDK, account, upload or external training service
-is required. See [the full pipeline guide](docs/full-pipeline.md).
+Shapley decomposition, then runs local models for each deduct-family total and
+each surface's `DetRatePerYear`. DataRobot is retired; no SDK, account, upload or
+external training service is required. See [the full pipeline guide](docs/full-pipeline.md).
 
 `full` finishes with an `11_qualification` report linked from the dashboard.
 To exercise the model release matrix without private data or weather access,
@@ -88,9 +92,19 @@ python -m pip install -e '.[original]'
 pavement full "/path/to/private/data" --open
 ```
 
-This runs every original preparation stage and then compares end-inspection
-deduct-family totals using local baseline, ElasticNet, random-forest,
-ExtraTrees, additive spline and occurrence/severity models.
+This runs every original preparation stage and then models end-inspection
+deduct-family totals and the signed annual PCI rate `DetRatePerYear` for each
+surface. The rate is `(PCI_end - PCI_start) * 365 / delta_days`, in **PCI points
+per year**; deterioration is negative. Deduct-family targets remain endpoint
+totals in deduct points. Their raw errors are not interchangeable with rate
+errors. Local candidates include baselines, ElasticNet, random forests,
+ExtraTrees, additive splines and, for nonnegative deduct levels,
+occurrence/severity models.
+
+The rate task is enabled by default; set `include_pci_rate` to `false` in the
+private full-pipeline profile to omit it. Its constant baseline is the weighted
+mean of its training observations; deduct levels retain their weighted median.
+
 Install the optional boosting backend to include its eight configurations
 automatically in `full` and `study`:
 
@@ -113,27 +127,45 @@ LightGBM is bounded to `>=4.6.0,<4.7`, with 4.6.0 used for admission. See
 [deployment instructions](docs/deployment.md) for its installation checks.
 
 Additive spline regression needs no extra package. It is included automatically
-in observed-level `full` and `study` searches. Its unclipped margin is additive;
-saved predictions retain the nonnegative floor. This implementation uses
+in observed-level `full` and `study` searches and the signed `full` rate task.
+Its margin is additive; deduct-level predictions retain the nonnegative floor,
+while rate predictions retain their sign. This implementation uses
 scikit-learn B-splines and weighted Ridge, rather than a proprietary GAM backend.
 
 Occurrence/severity regression also needs no extra package. Four settings pair
 logistic occurrence C 0.1/1.0 with positive-only ExtraTrees leaf sizes 2/10.
 Their point prediction is probability times expected positive magnitude, an
-overall conditional mean. MAE still selects the primary model; a zero median
-can win on zero-heavy targets. Private component CSVs and a separately saved
-within-family diagnostic model retain probability, severity and RMSE evidence.
+overall conditional mean for nonnegative deduct targets. MAE selects their
+primary model; a zero median can win on zero-heavy targets. These two-stage
+candidates are ineligible for the signed PCI-rate task. Private component CSVs
+and a separately saved within-family diagnostic model retain probability,
+severity and RMSE evidence.
 
 `full` and `study` enable family comparisons automatically. Each completed
 candidate has a development-fitted artifact and holdout predictions; each family
 has independent all-features/nonclimate CV choices and weighted permutation
 explanations. Two-stage explanations also separate occurrence and positive
 severity. Private CSVs and the offline dashboard consolidate these results.
-Primary selection remains mean development-CV MAE. A single spawned worker
-limits native threads and enforces 300-second fit/prediction deadlines.
+Deduct-level selection uses mean development-CV MAE; signed rate selection uses
+mean development-CV RMSE. Both full-run holdout MAE and RMSE use the saved
+positive inspection-interval weights. Models are selected on development groups
+and evaluated on reserved groups, with no holdout training. A single spawned
+worker limits native threads and enforces 300-second fit/prediction deadlines.
 Ctrl+C stops the active worker and preserves completed target checkpoints;
 the existing `full --resume` workflow reuses only verified complete tasks.
 See [model runtime and resume controls](docs/full-pipeline.md#model-runtime-and-task-checkpoints).
+
+Compare models or added predictors on fixed eligible rows, target values,
+weights and group splits. Report coverage separately when added data change
+which rows are available. An older RMSE is comparable only when its target,
+units, population, weighting and evaluation split agree. See
+[model, data and historical comparisons](docs/full-pipeline.md#comparing-models-data-changes-and-historical-benchmarks).
+The new rate task requires a new private run; updating the package does not
+add fitted models or operational results to an existing report.
+Rate-enabled runs save a per-surface, per-partition `rate_benchmark.csv` and
+stable pair identities in `row_map.csv` so comparisons can verify their rows,
+outcomes, weights, group folds and features. Missing identity evidence is
+explicit. See [the 0.6.0 numerical release notes](docs/full-pipeline.md#version-060-numerical-release-notes).
 
 The full pipeline retains the original inspection intervals and climate definitions, including
 PG, cooling, rainflow and construction-aging calculations. The final offline

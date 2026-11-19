@@ -21,8 +21,10 @@ COMPARISON_COLUMNS = ["candidate", "family", "feature_set", "candidate_status", 
     "development_rows", "development_groups", "holdout_rows", "holdout_groups", "cv_fit_wall_seconds",
     "refit_wall_seconds", "prediction_wall_seconds", "iterations", "holdout_mae", "holdout_rmse", "holdout_r2",
     "baseline_mae", "mae_skill", "primary_selected", "family_selected", "prediction_parity", "model_path", "training",
-    "importance_status", "importance_error_code", "refit_source"]
-FAMILY_COLUMNS = [*COMPARISON_COLUMNS, "nonclimate_candidate", "nonclimate_mae", "climate_added_skill"]
+    "importance_status", "importance_error_code", "refit_source", "target_kind", "selection_metric",
+    "cv_rmse_std", "cv_rmse_skill", "baseline_rmse", "rmse_skill"]
+FAMILY_COLUMNS = [*COMPARISON_COLUMNS, "nonclimate_candidate", "nonclimate_mae", "climate_added_skill",
+                  "nonclimate_rmse", "climate_added_rmse_skill"]
 PREDICTION_COLUMNS = ["candidate", "family", "feature_set", "row_id", "group_id", "actual", "prediction", "weight"]
 IMPORTANCE_COLUMNS = ["candidate", "family", "feature_set", "feature", "kind", "columns", "is_climate", "metric",
     "importance_mean", "importance_std", "repeats", "heuristic_support", "reliability_rule", "baseline_loss", "reference_loss"]
@@ -59,12 +61,15 @@ def _importance(model, development, heldout, columns, climate, target, weights, 
     from .study_modeling import _prediction_bundle, _score
     predicted, components = _prediction_bundle(model, heldout[columns])
     y = heldout[target].to_numpy(float)
-    reference = _score(y, predicted, weights)["mae"]
-    baseline = _score(y, baseline_prediction, weights)["mae"]
-    reliable = (row["candidate"] != "median" and row["cv_mae_skill"] is not None and row["cv_mae_skill"] > 0
-                and row["mae_skill"] is not None and row["mae_skill"] > 0 and row["holdout_r2"] is not None
+    metric = "rmse" if row.get("target_kind") == "signed_pci_rate" else "mae"
+    reference = _score(y, predicted, weights)[metric]
+    baseline = _score(y, baseline_prediction, weights)[metric]
+    cv_skill = row["cv_" + metric + "_skill"]
+    skill = row[metric + "_skill"]
+    reliable = (row["candidate"] not in {"median", "mean"} and cv_skill is not None and cv_skill > 0
+                and skill is not None and skill > 0 and row["holdout_r2"] is not None
                 and row["holdout_r2"] > 0 and heldout.group_id.nunique() >= 2)
-    losses = {"mae": (reference, baseline, reliable)}
+    losses = {metric: (reference, baseline, reliable)}
     positive = y > 0
     if components is not None:
         brier = float(np.average((positive-components["p_positive"])**2, weights=weights))
@@ -91,35 +96,43 @@ def _importance(model, development, heldout, columns, climate, target, weights, 
             perturbed = heldout[columns].copy()
             perturbed.loc[:, block] = heldout.iloc[order][block].to_numpy()
             prediction, components = _prediction_bundle(model, perturbed)
-            changes["mae"].append(_score(y, prediction, weights)["mae"]-reference)
+            changes[metric].append(_score(y, prediction, weights)[metric]-reference)
             if components is not None:
                 changes["occurrence_brier"].append(float(np.average((positive-components["p_positive"])**2,
                                                                                    weights=weights))-losses["occurrence_brier"][0])
                 if positive.any():
                     changes["positive_severity_mae"].append(float(np.average(abs(y[positive]-components["positive_mean"][positive]),
                                                                          weights=weights[positive]))-losses["positive_severity_mae"][0])
-        for metric, delta in changes.items():
-            reference_loss, baseline_loss, supported = losses[metric]
+        for loss_name, delta in changes.items():
+            reference_loss, baseline_loss, supported = losses[loss_name]
             result.append({"candidate": row["candidate"], "family": row["family"], "feature_set": row["feature_set"],
                 "feature": feature, "kind": kind, "columns": json.dumps(block), "is_climate": bool(set(block)&set(climate)),
-                "metric": metric, "importance_mean": float(np.mean(delta)), "importance_std": float(np.std(delta)),
+                "metric": loss_name, "importance_mean": float(np.mean(delta)), "importance_std": float(np.std(delta)),
                 "repeats": 5, "heuristic_support": supported, "baseline_loss": baseline_loss, "reference_loss": reference_loss,
                 "reliability_rule": "heuristic_support_only; exploratory predictive reliance; repeat_SD_not_confidence"})
     return result
 
 
 def build_comparisons(out, development, heldout, features, climate, target, seed, weight_column, requested):
-    from .study_modeling import MedianRegressor, _fit, _prediction_bundle, _weights, _score, candidates
+    from .study_modeling import baseline_estimator, _fit, _prediction_bundle, _weights, _score, candidates
     out = Path(out)
     leaders = pd.read_csv(out/"leaderboard.csv", keep_default_na=False)
     primary = joblib.load(out/"model.joblib")
-    pool = candidates(seed) if requested is None else build_candidates(seed, requested)
-    pool = {"median": MedianRegressor(), **pool}
+    target_kind = primary.get("target_kind", "deduct_total")
+    signed = target_kind == "signed_pci_rate"
+    baseline_id = "mean" if signed else "median"
+    metric = "rmse" if signed else "mae"
+    if requested is None:
+        pool = candidates(seed, target_kind=target_kind) if signed else candidates(seed)
+    else:
+        pool = build_candidates(seed, requested, target_kind=target_kind)
+    pool = {baseline_id: baseline_estimator(target_kind), **pool}
     sets = {"all": features, "nonclimate": [x for x in features if x not in climate]}
     weights, train_weights = _weights(heldout, weight_column), _weights(development, weight_column)
     y = heldout[target].to_numpy(float)
     baseline_prediction = primary["baseline_estimator"].predict(heldout[features])
-    baseline_mae = _score(y, baseline_prediction, weights)["mae"]
+    baseline_scores = _score(y, baseline_prediction, weights)
+    baseline_mae, baseline_rmse = baseline_scores["mae"], baseline_scores["rmse"]
     rows, predictions = [], []
     (out/"candidate_models").mkdir()
     runtime = ACTIVE.get()
@@ -128,13 +141,17 @@ def build_comparisons(out, development, heldout, features, climate, target, seed
         if not ID_PATTERN.fullmatch(name) or feature_set not in sets:
             raise SafeError("INVALID_COMPARISON_CANDIDATE")
         columns = sets[feature_set]
-        baseline_cv = float(leaders.loc[leaders.candidate.eq("median") & leaders.feature_set.eq(feature_set), "cv_mae"].iloc[0])
-        cv = float(item["cv_mae"]) if item["cv_mae"] != "" else None
+        baseline_cv = leaders.loc[leaders.candidate.eq(baseline_id) & leaders.feature_set.eq(feature_set)].iloc[0]
+        skills = {}
+        for loss in ("mae", "rmse"):
+            score = item["cv_" + loss]
+            reference = float(baseline_cv["cv_" + loss])
+            skills["cv_" + loss + "_skill"] = 1-float(score)/reference if score != "" and reference > 0 else None
         row = {**item, "comparison_status": item["candidate_status"], "family_selected": False,
             "primary_selected": item["selected"], "feature_count": len(columns), "development_rows": len(development),
             "development_groups": int(development.group_id.nunique()), "holdout_rows": len(heldout),
             "holdout_groups": int(heldout.group_id.nunique()), "baseline_mae": baseline_mae,
-            "cv_mae_skill": 1-cv/baseline_cv if cv is not None and baseline_cv > 0 else None,
+            "baseline_rmse": baseline_rmse, "target_kind": target_kind, **skills,
             "cv_fit_wall_seconds": sum(r["wall_seconds"] for r in runtime.records if r.get("phase") == "cv"
                 and r.get("candidate") == name and r.get("feature_set") == feature_set and r["operation"] == "fit") if runtime else None}
         rows.append(row)
@@ -172,10 +189,10 @@ def build_comparisons(out, development, heldout, features, climate, target, seed
         relative = f"candidate_models/{feature_set}__{name}.joblib"
         artifact = {"format_version": 1, "candidate_registry_version": REGISTRY_VERSION,
             "candidate": name, "candidate_family": family, "candidate_parameters": json.loads(item["parameters"]),
-            "target": target, "features": columns, "climate_features": [x for x in climate if x in columns],
+            "target": target, "target_kind": target_kind, "features": columns, "climate_features": [x for x in climate if x in columns],
             "estimator": model, "fit_partition": "development", "weight_column": weight_column,
             "weighting": "equal_total_per_group" if weight_column is None else "interval_days",
-            "selection_metric": "mean_development_cv_MAE", "environment": environment_versions(),
+            "selection_metric": primary.get("selection_metric", "mean_development_cv_MAE"), "environment": environment_versions(),
             "training_details": getattr(model, "training_details_", None)}
         joblib.dump(artifact, out/relative)
         # Verify the exact artifact that downstream importance and report
@@ -188,6 +205,7 @@ def build_comparisons(out, development, heldout, features, climate, target, seed
         row.update(comparison_status="completed", prediction_parity=True, model_path=relative,
             holdout_mae=measured["mae"], holdout_rmse=measured["rmse"], holdout_r2=measured["r2"],
             mae_skill=1-measured["mae"]/baseline_mae if baseline_mae > 0 else None,
+            rmse_skill=1-measured["rmse"]/baseline_rmse if baseline_rmse > 0 else None,
             iterations=details.get("iterations") if details else None, training=json.dumps(details, sort_keys=True))
         for row_id, group_id, actual, point, weight in zip(heldout.row_id, heldout.group_id, y, predicted, weights):
             predictions.append({"candidate": name, "family": family, "feature_set": feature_set, "row_id": row_id,
@@ -199,11 +217,11 @@ def build_comparisons(out, development, heldout, features, climate, target, seed
             families.append({"family": family, "feature_set": feature_set, "comparison_status": "no_completed_candidate",
                              "candidate_status": str(block.candidate_status.iloc[0]), "error_code": str(block.error_code.iloc[0])})
             continue
-        selected = min(eligible, key=lambda r: (float(r["cv_mae"]), r["candidate"]))
+        selected = min(eligible, key=lambda r: (float(r["cv_" + metric]), r["candidate"]))
         selected["family_selected"] = True
         family_row = dict(selected)
         families.append(family_row)
-        if selected["candidate"] == "median":
+        if selected["candidate"] == baseline_id:
             selected["importance_status"] = family_row["importance_status"] = "baseline_not_explained"
             continue
         artifact = joblib.load(out/selected["model_path"])
@@ -226,6 +244,8 @@ def build_comparisons(out, development, heldout, features, climate, target, seed
                           and r.get("comparison_status") == "completed"), None)
         if nonclimate:
             row.update(nonclimate_candidate=nonclimate["candidate"], nonclimate_mae=nonclimate["holdout_mae"],
+                       nonclimate_rmse=nonclimate["holdout_rmse"],
+                       climate_added_rmse_skill=1-row["holdout_rmse"]/nonclimate["holdout_rmse"] if nonclimate["holdout_rmse"] > 0 else None,
                        climate_added_skill=1-row["holdout_mae"]/nonclimate["holdout_mae"] if nonclimate["holdout_mae"] > 0 else None)
     pd.DataFrame(rows, columns=COMPARISON_COLUMNS).to_csv(out/"candidate_comparisons.csv", index=False)
     pd.DataFrame(families, columns=FAMILY_COLUMNS).to_csv(out/"family_summary.csv", index=False)

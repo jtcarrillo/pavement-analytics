@@ -10,7 +10,7 @@ import numpy as np
 import pandas as pd
 from sklearn.linear_model import ElasticNet
 
-from pavement_analytics.full_modeling import consolidate_full_models, run_full_models
+from pavement_analytics.full_modeling import _rate_benchmark, consolidate_full_models, run_full_models
 from pavement_analytics.original.common import Run
 from pavement_analytics.security import SafeError
 from pavement_analytics.study_modeling import _estimator, make_partitions, search_levels
@@ -242,6 +242,177 @@ class FullModelTests(unittest.TestCase):
                 run_full_models(self.pipeline, self.report, self.cfg)
         fitting.assert_not_called()
         self.assertGreater(json.loads((self.pipeline/"model_fit_budget.json").read_text())["fit_calls_upper_bound"], 1)
+
+    def test_signed_row_map_preserves_curated_pair_identity_after_model_reordering(self):
+        groups = {value: f"input_{i:04d}.csv" for i, value in enumerate(self.frame.partition_airfield.unique())}
+        originals = {value: f"generated_source_{i:03d}.csv" for i, value in enumerate(groups.values())}
+        frame = self.frame.copy()
+        frame["partition_airfield"] = frame.partition_airfield.map(groups)
+        frame["_pipeline_model_row"] = np.arange(len(frame))
+        frame["DetRatePerYear"] = -frame.PCI_start / 20
+        curated = pd.DataFrame({"_source_file_start": frame.partition_airfield,
+            "_source_file_end": frame.partition_airfield, "SectionUniqueID": frame.partition_section,
+            "start_date": "2020-01-01", "end_date": "2022-01-01"})
+        curated_dir = self.pipeline/"06_curated"
+        curated_dir.mkdir()
+        curated.to_csv(curated_dir/"PCC.csv", index=False)
+        setup = {"sources": [{"normalized": str(self.root/"inputs"/name),
+                              "original_path": str(self.root/"generated"/original)}
+                             for name, original in originals.items()]}
+        (self.root/"full_setup_report.json").write_text(json.dumps(setup))
+        plan = self.plan.copy()
+        plan["group_id"] = plan.group_id.map(groups)
+        plan.to_csv(self.pipeline/"07_modeling/partitions.csv", index=False)
+        frame = frame.sample(frac=1, random_state=8).reset_index(drop=True)
+        frame.to_csv(self.modeldir/"PCC.csv", index=False)
+        additions = pd.DataFrame([
+            {"column": "DetRatePerYear", "disposition": "TARGET"},
+            {"column": "_pipeline_model_row", "disposition": "PARTITION"}])
+        pd.concat([self.feature_audit, additions], ignore_index=True).to_csv(
+            self.modeldir/"PCC_feature_audit.csv", index=False)
+        cfg = {**self.cfg, "local_model_options": {"candidate_ids": ["enet_0.01"],
+                                                     "comparisons": False, "isolated": False}}
+        _, _, artifacts = run_full_models(self.pipeline, self.report, cfg)
+        out = self.pipeline/"09_local_models"
+        mapping = pd.read_csv(out/"row_map.csv")
+        self.assertIn(out/"rate_benchmark.csv", artifacts)
+        self.assertEqual(mapping.model_csv_row.tolist(), list(range(2, len(frame)+2)))
+        self.assertEqual(mapping.curated_row.tolist(), frame._pipeline_model_row.tolist())
+        for row in mapping.itertuples():
+            original = curated.iloc[row.curated_row]
+            identity = ["PCC", originals[original._source_file_start], originals[original._source_file_end],
+                        original.SectionUniqueID, original.start_date, original.end_date]
+            canonical = json.dumps(identity, ensure_ascii=True, allow_nan=False, separators=(",", ":"))+"\n"
+            self.assertEqual(row.pair_id, hashlib.sha256(canonical.encode()).hexdigest())
+        self.assertEqual(mapping.pair_id.nunique(), len(frame))
+        saved = pd.read_csv(out/"materials/PCC/DetRatePerYear/holdout_predictions.csv")
+        linked = mapping.set_index("row_id").loc[saved.row_id]
+        np.testing.assert_allclose(saved.actual, frame.iloc[linked.model_csv_row.to_numpy()-2].DetRatePerYear,
+                                   rtol=1e-12, atol=1e-12)
+
+
+class RateBenchmarkTests(unittest.TestCase):
+    def setUp(self):
+        temporary = temporary_directory()
+        self.addCleanup(temporary.cleanup)
+        self.root = Path(temporary.name)
+        self.pipeline = self.root/"pipeline"
+        (self.pipeline/"06_curated").mkdir(parents=True)
+        self.features = ["x", "material_name"]
+        sources = [f"input_{i:04d}.csv" for i in range(3)]
+        self.table = pd.DataFrame({"group_id": np.repeat(sources, 2),
+            "_pipeline_model_row": range(6), "DetRatePerYear": -np.arange(1., 7.),
+            "delta_days": np.arange(1., 7.)*365, "x": np.arange(6.), "material_name": ["type_a", "type_b"]*3})
+        self.plan = pd.DataFrame({"group_id": sources,
+            "partition": ["development", "development", "holdout"], "fold": [0, 1, -1]})
+        self.curated = pd.DataFrame({"_source_file_start": self.table.group_id,
+            "_source_file_end": self.table.group_id, "SectionUniqueID": ["section_0", "section_1"]*3,
+            "start_date": ["2020-01-01", "2021-01-01"]*3, "end_date": ["2021-01-01", "2023-01-01"]*3})
+        self.setup = {"sources": [{"normalized": str(self.root/"inputs"/name),
+                                   "original_path": str(self.root/"generated"/f"source_{i}.csv")}
+                                  for i, name in enumerate(sources)]}
+        self.write_sources(self.curated, self.setup)
+
+    def write_sources(self, curated, setup):
+        curated.to_csv(self.pipeline/"06_curated/PCC.csv", index=False)
+        (self.root/"full_setup_report.json").write_text(json.dumps(setup))
+
+    def benchmark(self, table=None, plan=None):
+        return _rate_benchmark(self.pipeline, "PCC", self.table if table is None else table,
+                               self.features, self.plan if plan is None else plan, {})
+
+    def test_source_renumbering_and_curated_and_model_reordering_preserve_evidence(self):
+        first_ids, first = self.benchmark()
+        renames = {name: f"input_{i+100:04d}.csv" for i, name in enumerate(self.plan.group_id)}
+        setup = json.loads(json.dumps(self.setup))
+        for source in setup["sources"]:
+            source["normalized"] = str(self.root/"inputs"/renames[Path(source["normalized"]).name])
+        order = [2, 5, 0, 4, 1, 3]
+        positions = {old: new for new, old in enumerate(order)}
+        curated = self.curated.replace(renames).iloc[order].reset_index(drop=True)
+        table = self.table.copy()
+        table["group_id"] = table.group_id.map(renames)
+        table["_pipeline_model_row"] = table._pipeline_model_row.map(positions)
+        table = table.iloc[[5, 2, 1, 3, 0, 4]].reset_index(drop=True)
+        plan = self.plan.copy()
+        plan["group_id"] = plan.group_id.map(renames)
+        self.write_sources(curated, setup)
+        later_ids, later = self.benchmark(table, plan)
+        self.assertEqual(dict(zip(self.table.x, first_ids)), dict(zip(table.x, later_ids)))
+        self.assertEqual(first, later)
+        self.assertEqual([row["eligible_rows"] for row in first], [4, 2])
+        self.assertTrue(all(row["identity_status"] == "ready" for row in first))
+
+    def test_each_fingerprint_changes_only_for_its_evaluation_role(self):
+        _, records = self.benchmark()
+        first = records[0]
+        changes = [("DetRatePerYear", -2.5, "outcomes_weights_sha256"),
+                   ("delta_days", 500., "outcomes_weights_sha256"),
+                   ("x", 99., "features_sha256"),
+                   ("material_name", "type_c", "features_sha256")]
+        hash_columns = [name for name in first if name.endswith("_sha256")]
+        for column, value, changed_hash in changes:
+            with self.subTest(column=column):
+                table = self.table.copy()
+                table.loc[0, column] = value
+                _, changed = self.benchmark(table)
+                self.assertEqual(records[1], changed[1])
+                for key in hash_columns:
+                    if key == changed_hash:
+                        self.assertNotEqual(first[key], changed[0][key])
+                    else:
+                        self.assertEqual(first[key], changed[0][key])
+        plan = self.plan.copy()
+        plan.loc[:1, "fold"] = [1, 0]
+        _, changed = self.benchmark(plan=plan)
+        self.assertNotEqual(first["group_folds_sha256"], changed[0]["group_folds_sha256"])
+        for key in set(hash_columns)-{"group_folds_sha256"}:
+            self.assertEqual(first[key], changed[0][key])
+        plan.loc[0, ["partition", "fold"]] = ["holdout", -1]
+        _, repartitioned = self.benchmark(plan=plan)
+        self.assertEqual([row["eligible_rows"] for row in repartitioned], [2, 4])
+        self.assertNotEqual(records[0]["pair_ids_sha256"], repartitioned[0]["pair_ids_sha256"])
+        self.assertNotEqual(records[1]["pair_ids_sha256"], repartitioned[1]["pair_ids_sha256"])
+
+    def test_zero_targets_are_eligible_and_missing_targets_have_no_hashes(self):
+        table = self.table.copy()
+        table["DetRatePerYear"] = 0.
+        _, zero = self.benchmark(table)
+        self.assertTrue(all(row["identity_status"] == "ready" for row in zero))
+        table["DetRatePerYear"] = np.nan
+        _, missing = self.benchmark(table)
+        self.assertTrue(all(row["identity_status"] == "no_eligible_rows" and row["eligible_rows"] == 0
+                            for row in missing))
+        self.assertTrue(all(value is None for row in missing for key, value in row.items()
+                            if key.endswith("_sha256")))
+
+    def test_missing_invalid_and_duplicate_pair_identities_are_unavailable(self):
+        for position in (np.nan, -1, 1.5, len(self.curated)):
+            with self.subTest(position=position):
+                table = self.table.copy()
+                table["_pipeline_model_row"] = table._pipeline_model_row.astype(float)
+                table.loc[0, "_pipeline_model_row"] = position
+                ids, evidence = self.benchmark(table)
+                self.assertEqual(ids.iloc[0], "")
+                self.assertEqual(evidence[0]["identity_status"], "identity_unavailable")
+                self.assertEqual(evidence[1]["identity_status"], "ready")
+                self.assertTrue(all(value is None for key, value in evidence[0].items()
+                                    if key.endswith("_sha256")))
+        table = self.table.copy()
+        table.loc[0, "DetRatePerYear"] = np.nan
+        table.loc[0, "_pipeline_model_row"] = -1
+        _, evidence = self.benchmark(table)
+        self.assertEqual(evidence[0]["identity_status"], "ready")
+        self.assertEqual(evidence[0]["eligible_rows"], 3)
+        duplicate = self.curated.copy()
+        duplicate.loc[1] = duplicate.loc[0]
+        self.write_sources(duplicate, self.setup)
+        ids, evidence = self.benchmark()
+        self.assertTrue(ids.iloc[:2].eq("").all())
+        self.assertEqual(evidence[0]["identity_status"], "identity_unavailable")
+        self.write_sources(self.curated.drop(columns="start_date"), self.setup)
+        _, evidence = self.benchmark()
+        self.assertTrue(all(row["identity_status"] == "identity_unavailable" for row in evidence))
 
 
 class IntervalWeightTests(unittest.TestCase):

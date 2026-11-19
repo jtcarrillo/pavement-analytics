@@ -33,6 +33,13 @@ class OptionalBoostingTests(unittest.TestCase):
         self.addCleanup(temporary.cleanup)
         self.root = Path(temporary.name)
 
+    def test_unknown_target_kind_fails_before_loading_backend(self):
+        model = GroupedXGBoostRegressor({}, target_kind="unknown")
+        with patch("pavement_analytics.boosting.require_xgboost") as backend:
+            with self.assertRaisesRegex(SafeError, "INVALID_MODEL_TARGET_KIND"):
+                model.fit(pd.DataFrame({"x": [0., 1.]}), [-1., 1.])
+        backend.assert_not_called()
+
     def test_absent_dependency_preserves_base_search_and_is_explicitly_visible(self):
         original = importlib.util.find_spec
         def available(name, *args, **kwargs):
@@ -115,6 +122,27 @@ class XGBoostTests(unittest.TestCase):
                 np.testing.assert_allclose(fitted.predict(X), 9., atol=1e-3, rtol=0)
                 np.testing.assert_allclose(uniform.predict(X), 5., atol=1e-3, rtol=0)
 
+    def test_signed_rate_preserves_negative_weighted_predictions_and_serialization(self):
+        X = pd.DataFrame({"constant": np.ones(48)})
+        y = np.tile([-10., 10.], 24)
+        weights = np.where(y < 0, 9., 1.)
+        groups = np.repeat([f"SYN{i}" for i in range(12)], 4)
+        defaults = build_candidates(requested=XGB_IDS)
+        for name, model in build_candidates(requested=XGB_IDS, target_kind="signed_pci_rate").items():
+            with self.subTest(candidate=name):
+                fitted = clone(model).fit_grouped(X, y, sample_weight=weights, groups=groups)
+                prediction = fitted.predict(X)
+                np.testing.assert_allclose(prediction, -8., atol=1e-3, rtol=0)
+                self.assertEqual(fitted.training_details_["target_kind"], "signed_pci_rate")
+                self.assertEqual(fitted.training_details_["stopping_metric"], "rmse")
+                if fitted.early_stopping_rounds is not None:
+                    self.assertIn("rmse", fitted.stopping_evaluations_["validation_0"])
+                path = self.root/(name+"-signed.joblib")
+                joblib.dump(fitted, path)
+                np.testing.assert_allclose(joblib.load(path).predict(X), prediction, rtol=0, atol=1e-12)
+                with self.assertRaisesRegex(SafeError, "INVALID_WEIGHTED_MODEL_INPUT"):
+                    clone(defaults[name]).fit_grouped(X, y, sample_weight=weights, groups=groups)
+
     def test_every_configuration_handles_stress_clones_serializes_and_repeats_deterministically(self):
         _, stress, _, plan, _, _ = records(profile="smoke")
         frame = stress.loc[stress.material.eq("PCC")].dropna(subset=["level_linear"])
@@ -130,6 +158,10 @@ class XGBoostTests(unittest.TestCase):
                 path = self.root/(name+".joblib")
                 joblib.dump(fitted, path)
                 np.testing.assert_allclose(joblib.load(path).predict(test[columns]), prediction, rtol=0, atol=1e-12)
+                legacy = joblib.load(path)
+                del legacy.target_kind
+                del legacy.estimator_.target_kind
+                np.testing.assert_allclose(legacy.predict(test[columns]), prediction, rtol=0, atol=1e-12)
                 repeated = clone(model).fit_grouped(train[columns], train.level_linear,
                                                    sample_weight=train.delta_days, groups=train.group_id)
                 np.testing.assert_array_equal(repeated.predict(test[columns]), prediction)

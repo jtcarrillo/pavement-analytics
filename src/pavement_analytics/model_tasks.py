@@ -15,16 +15,17 @@ from .io import read_json, write_json, sha256
 from .security import Boundary, SafeError, reject_links, source_root
 
 
-def task_key(table, plan, features, climate, target, seed, weight_column, options, extra=None):
+def task_key(table, plan, features, climate, target, seed, weight_column, options, extra=None, *, target_kind="deduct_total"):
     from .pipeline import code_digest
-    from .model_registry import candidate_catalog, environment_versions, REGISTRY_VERSION
+    from .model_registry import candidate_catalog, environment_versions, REGISTRY_VERSION, validate_target_kind
+    validate_target_kind(target_kind)
     content = hashlib.sha256()
     for frame in (table, plan):
         content.update(json.dumps([(str(c), str(frame[c].dtype)) for c in frame], ensure_ascii=True).encode())
         content.update(pd.util.hash_pandas_object(frame, index=False).to_numpy().tobytes())
-    content.update(json.dumps({"features": features, "climate_features": climate, "target": target,
+    content.update(json.dumps({"features": features, "climate_features": climate, "target": target, "target_kind": target_kind,
         "seed": seed, "weight_column": weight_column, "options": options, "extra": extra,
-        "registry_version": REGISTRY_VERSION, "candidates": candidate_catalog(seed),
+        "registry_version": REGISTRY_VERSION, "candidates": candidate_catalog(seed, target_kind=target_kind),
         "python": platform.python_version(), "platform": [platform.system(), platform.machine()],
         "code_sha256": code_digest(), "environment": environment_versions()}, sort_keys=True).encode())
     return content.hexdigest()

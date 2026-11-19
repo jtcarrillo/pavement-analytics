@@ -182,6 +182,7 @@ def prepare_full(boundary: Boundary, data: Path, config_path: Path | None = None
     enforced = {"skip_climate": False, "skip_distress": False, "skip_pci": False, "no_shapley": False}
     overrides = {k: {"previous": cfg[k], "full": v} for k, v in enforced.items() if cfg[k] != v}
     cfg.update(enforced)
+    cfg["include_pci_rate"] = source_options.get("include_pci_rate", True)
     cfg["target_mode"] = source_options.get("target_mode", "deduct_families")
     if cfg["target_mode"] != "deduct_families":
         raise SafeError("FULL_MODEL_SWEEP_REQUIRES_DEDUCT_FAMILY_TARGETS")
@@ -191,7 +192,7 @@ def prepare_full(boundary: Boundary, data: Path, config_path: Path | None = None
     setup = {"schema_version": 1, "mode": "original_full_pipeline", "profile": str(profile) if profile else None,
              "original_data": str(data), "missing_required": missing, "forced_stage_settings": overrides,
              "blank_distress_policy": "Original structural-zero assumption for exported blank distress cells",
-             "target_mode": cfg["target_mode"], "model_backend": "local",
+             "target_mode": cfg["target_mode"], "include_pci_rate": cfg["include_pci_rate"], "model_backend": "local",
              "retired_backend_request_ignored": retired_backend_request,
              "climate_cache": cache_audit,
              "mapping": {"original_path": cfg.get("mapping"), "location_directory": cfg.get("csv_dir")},
@@ -326,6 +327,7 @@ def full(boundary: Boundary, data: Path | None = None, config_path: Path | None 
                 if any(v is not None for v in (config_path, mapping, csv_dir, cdv_curves, cache_dir, date_format)) or fit_deduct_curves:
                     raise SafeError("FULL_RESUME_REQUIRES_UNCHANGED_CONFIGURATION")
                 cfg = read_json(boundary.path("full_config.json"))
+                cfg.setdefault("include_pci_rate", False)  # Older completed sweeps were deduct-only.
                 setup = _verify_setup(boundary)
                 if data is not None and str(external_path(data, boundary.public)) != setup["original_data"]:
                     raise SafeError("FULL_RESUME_DATA_PATH_CHANGED")
@@ -365,6 +367,7 @@ def full(boundary: Boundary, data: Path | None = None, config_path: Path | None 
             def model_stage():
                 summaries, audit, artifacts = run_full_models(pipeline_out, run.data, cfg, out=models_out, progress=progress)
                 return {"targets": len(summaries), "status_counts": dict(Counter(s["status"] for s in summaries)),
+                        "target_kind_counts": dict(Counter(s["target_kind"] for s in summaries)),
                         "output": str(models_out.relative_to(pipeline_out))}, artifacts
             run.stage("09_local_models", model_stage)
             saved = read_json(models_out / "sweep_summary.json")

@@ -19,24 +19,27 @@ from .model_comparison import (COMPARISON_COLUMNS, FAMILY_COLUMNS,
 from .model_runtime import TIMING_COLUMNS
 
 SUMMARY_COLUMNS = [
-    "material", "target", "original_target", "status", "candidate", "cv_mae", "cv_mae_std",
-    "holdout_mae", "holdout_rmse", "holdout_r2", "baseline_mae", "mae_skill",
+    "material", "target", "original_target", "target_kind", "target_units", "selection_metric",
+    "status", "candidate", "cv_mae", "cv_mae_std", "cv_rmse", "cv_rmse_std",
+    "holdout_mae", "holdout_rmse", "holdout_r2", "baseline_mae", "baseline_rmse", "baseline_kind",
+    "baseline_candidate", "baseline_family", "mae_skill", "rmse_skill",
     "valid_target_rows", "valid_target_groups", "development_rows", "development_groups",
-    "holdout_rows", "holdout_groups", "nonzero_fraction", "nonclimate_mae",
-    "nonclimate_candidate", "climate_added_skill", "importance_reliable",
+    "holdout_rows", "holdout_groups", "nonzero_fraction", "nonclimate_mae", "nonclimate_rmse",
+    "nonclimate_candidate", "climate_added_skill", "climate_added_rmse_skill", "importance_reliable",
     "constant_target_scope", "mostly_zero_target",
-    "candidate_family", "candidate_registry_version", "candidate_failure_count", "candidate_unavailable_count",
+    "candidate_family", "candidate_registry_version", "candidate_failure_count", "candidate_unavailable_count", "candidate_ineligible_count",
     "candidate_iterations",
     "comparison_failure_count", "comparison_completed_count",
-    "importance_status",
+    "importance_status", "importance_metric",
 ]
-IMPORTANCE_COLUMNS = ["material", "target", "feature", "kind", "is_climate",
+IMPORTANCE_COLUMNS = ["material", "target", "feature", "kind", "is_climate", "metric",
                       "importance_mean", "importance_std", "repeats", "reliable",
                       "baseline_relative_importance"]
 PREDICTION_COLUMNS = ["material", "target", "row_id", "group_id", "actual", "prediction",
                       "baseline_prediction", "nonclimate_prediction", "weight"]
 LEADER_COLUMNS = ["material", "target", "candidate", "feature_set", "cv_mae", "cv_mae_std",
-                  "cv_rmse", "cv_wins_vs_baseline", "family", "candidate_status", "error_code",
+                  "cv_rmse", "cv_rmse_std", "target_kind", "selection_metric", "baseline_candidate",
+                  "cv_wins_vs_baseline", "family", "candidate_status", "error_code",
                   "folds_completed", "selected", "parameters", "cv_iterations", "cv_training",
                   "final_iterations", "final_training", "two_stage_diagnostic", "diagnostic_training"]
 SCATTER_LIMIT = 600
@@ -79,6 +82,12 @@ def _target_label(row: dict) -> str:
     return original if isinstance(original, str) and original else str(row.get("target", ""))
 
 
+def _is_signed_rate(row: dict) -> bool:
+    return (row.get("target_kind") == "signed_pci_rate"
+            or row.get("target") == "DetRatePerYear"
+            or row.get("original_target") == "DetRatePerYear")
+
+
 def _table(headers: list[str], rows: list[list[str]]) -> str:
     return '<div class="table-wrap"><table><thead><tr>' + ''.join(
         f'<th scope="col">{_text(h)}</th>' for h in headers) + '</tr></thead><tbody>' + ''.join(
@@ -98,7 +107,7 @@ def _read(path: Path) -> pd.DataFrame:
 
 
 def _metrics(row: dict, frame: pd.DataFrame) -> None:
-    """Recompute all available holdout metrics using saved group-balanced weights."""
+    """Recompute all available holdout metrics using the saved observation weights."""
     needed = {"actual", "prediction", "baseline_prediction", "weight"}
     if frame.empty or not needed <= set(frame):
         return
@@ -108,12 +117,16 @@ def _metrics(row: dict, frame: pd.DataFrame) -> None:
     y, pred, weights = values.actual.to_numpy(), values.prediction.to_numpy(), values.weight.to_numpy()
     error = y - pred
     mae = float(np.average(np.abs(error), weights=weights))
-    baseline = float(np.average(np.abs(y - values.baseline_prediction.to_numpy()), weights=weights))
+    baseline_error = y - values.baseline_prediction.to_numpy()
+    baseline = float(np.average(np.abs(baseline_error), weights=weights))
+    baseline_rmse = float(np.sqrt(np.average(baseline_error ** 2, weights=weights)))
     variance = float(np.average((y - np.average(y, weights=weights)) ** 2, weights=weights))
     mse = float(np.average(error ** 2, weights=weights))
     row.update(holdout_mae=mae, holdout_rmse=float(np.sqrt(mse)),
                holdout_r2=1 - mse / variance if variance > 0 else None,
-               baseline_mae=baseline, mae_skill=1 - mae / baseline if baseline > 0 else None,
+               baseline_mae=baseline, baseline_rmse=baseline_rmse,
+               mae_skill=1 - mae / baseline if baseline > 0 else None,
+               rmse_skill=1 - np.sqrt(mse) / baseline_rmse if baseline_rmse > 0 else None,
                holdout_rows=len(frame))
     if "group_id" in frame:
         row["holdout_groups"] = frame.group_id.nunique()
@@ -121,11 +134,13 @@ def _metrics(row: dict, frame: pd.DataFrame) -> None:
         other = pd.to_numeric(frame.nonclimate_prediction, errors="coerce").to_numpy()
         if np.isfinite(other).all():
             nonclimate = float(np.average(np.abs(y - other), weights=weights))
-            row.update(nonclimate_mae=nonclimate,
-                       climate_added_skill=1 - mae / nonclimate if nonclimate > 0 else None)
+            nonclimate_rmse = float(np.sqrt(np.average((y - other) ** 2, weights=weights)))
+            row.update(nonclimate_mae=nonclimate, nonclimate_rmse=nonclimate_rmse,
+                       climate_added_skill=1 - mae / nonclimate if nonclimate > 0 else None,
+                       climate_added_rmse_skill=1 - np.sqrt(mse) / nonclimate_rmse if nonclimate_rmse > 0 else None)
 
 
-def _scatter(frame: pd.DataFrame) -> str:
+def _scatter(frame: pd.DataFrame, *, signed_rate: bool = False) -> str:
     if frame.empty or not {"actual", "prediction"} <= set(frame):
         return '<p class="empty">No independent holdout predictions available.</p>'
     frame = frame.loc[np.isfinite(frame[["actual", "prediction"]].to_numpy(float)).all(axis=1)]
@@ -138,7 +153,8 @@ def _scatter(frame: pd.DataFrame) -> str:
     sampled = frame.iloc[np.linspace(0, len(frame) - 1, min(SCATTER_LIMIT, len(frame)), dtype=int)]
     x = lambda v: 72 + (float(v) - low) / (high - low) * 370
     y = lambda v: 276 - (float(v) - low) / (high - low) * 230
-    chunks = ['<svg viewBox="0 0 500 330" role="img" aria-label="Actual versus predicted deduct total">',
+    description = 'Actual versus predicted signed PCI rate' if signed_rate else 'Actual versus predicted deduct total'
+    chunks = [f'<svg viewBox="0 0 500 330" role="img" aria-label="{description}">',
               '<rect x="72" y="46" width="370" height="230" fill="#f0f5f8"/>']
     for value in np.linspace(low, high, 5):
         px, py = x(value), y(value)
@@ -150,14 +166,16 @@ def _scatter(frame: pd.DataFrame) -> str:
         chunks.append(f'<circle cx="{x(point.actual):.2f}" cy="{y(point.prediction):.2f}" r="3" '
                       f'fill="#117c83" opacity=".5"><title>Actual {_number(point.actual)}; '
                       f'predicted {_number(point.prediction)}</title></circle>')
-    chunks += ['<text x="257" y="323" text-anchor="middle">Observed deduct-family total</text>',
-               '<text transform="translate(17 162) rotate(-90)" text-anchor="middle">Predicted total</text>',
+    observed = 'Observed PCI rate (points/year)' if signed_rate else 'Observed deduct-family total'
+    predicted = 'Predicted PCI rate (points/year)' if signed_rate else 'Predicted total'
+    chunks += [f'<text x="257" y="323" text-anchor="middle">{observed}</text>',
+               f'<text transform="translate(17 162) rotate(-90)" text-anchor="middle">{predicted}</text>',
                '</svg>', f'<p class="caption">{len(sampled):,} of {len(frame):,} holdout points shown. '
                'Dashed line: perfect prediction. Complete predictions are exported.</p>']
     return ''.join(chunks)
 
 
-def _importance_chart(frame: pd.DataFrame) -> str:
+def _importance_chart(frame: pd.DataFrame, *, metric: str = "mae") -> str:
     if frame.empty or not {"feature", "importance_mean", "kind"} <= set(frame):
         return '<p class="empty">No feature-importance estimates available.</p>'
     subset = frame.loc[frame.kind.eq("feature")].copy()
@@ -192,14 +210,14 @@ def _importance_chart(frame: pd.DataFrame) -> str:
                    f'x2="{x(value + uncertainty):.2f}" y2="{top + 12}" stroke="#1b3148"/>']
     chunks += [f'<text x="210" y="{height - 29}">{_number(low)}</text>',
                f'<text x="480" y="{height - 29}" text-anchor="end">{_number(high)}</text>',
-               f'<text x="345" y="{height - 8}" text-anchor="middle">Increase in holdout MAE</text></svg>',
+               f'<text x="345" y="{height - 8}" text-anchor="middle">Increase in holdout {metric.upper()}</text></svg>',
                '<p class="caption">Top 10 predictors. Teal: climate; violet: other inputs. Lines show '
                'repeat standard deviation, not confidence intervals. Values near or below zero show '
                'little measured contribution in this model.</p>']
     return ''.join(chunks)
 
 
-def _coverage(audit: dict) -> str:
+def _coverage(audit: dict, *, has_rate: bool = False, has_deduct: bool = True) -> str:
     original = audit.get("task_mode") == "original_pipeline"
     climate = audit.get("climate", {})
     if not isinstance(climate, dict):
@@ -275,11 +293,17 @@ def _coverage(audit: dict) -> str:
                    'network or climate location across partitions; this run does not establish performance '
                    'at new independent locations.</p>')
     if original:
-        result += ('<p>Targets are observed deduct-family totals at the <strong>end inspection of each '
+        if has_deduct:
+            result += ('<p>Deduct-family targets are observed totals at the <strong>end inspection of each '
                    'eligible original-pipeline pair</strong>. The original pairing, distress, PCI and '
                    'Shapley preparation stages determine this population. These targets are not annual '
-                   'deduct changes. Target-specific missing values remain excluded only for that target.</p>'
-                   '<p class="notice">The original climate definitions are preserved: interval exposures, '
+                   'deduct changes. Target-specific missing values remain excluded only for that target.</p>')
+        if has_rate:
+            result += ('<p>The separate <strong>DetRatePerYear</strong> target is signed annual PCI change: '
+                       '(PCI_end − PCI_start) × 365 / delta_days. Negative values mean deterioration; '
+                       'zero means no recorded PCI change. Its errors are in PCI points/year, while '
+                       'deduct-total errors are in deduct points. These targets are reported separately.</p>')
+        result += ('<p class="notice">The original climate definitions are preserved: interval exposures, '
                    'pavement-grade statistics and construction-aging calculations use their original '
                    'windows. Some statistics use weather outside the inspection interval. This is '
                    '<strong>retrospective explanatory modeling</strong>, not a prospective forecast. '
@@ -332,6 +356,11 @@ def build_study_report(out: Path, summaries: list[dict], audit: dict,
             raise SafeError("DUPLICATE_REPORT_TASK")
         seen.add((material, target))
         row = {key: summary.get(key) for key in SUMMARY_COLUMNS}
+        signed_rate = _is_signed_rate(row)
+        row["target_kind"] = "signed_pci_rate" if signed_rate else "deduct_total"
+        row["target_units"] = "PCI points/year" if signed_rate else "deduct points"
+        row["baseline_kind"] = "weighted_mean" if signed_rate else "weighted_median"
+        row["importance_metric"] = "rmse" if signed_rate else "mae"
         prevalence = row.get("nonzero_fraction")
         row["mostly_zero_target"] = (float(prevalence) < SPARSE_NONZERO_THRESHOLD
                                      if _finite(prevalence) else None)
@@ -356,7 +385,8 @@ def build_study_report(out: Path, summaries: list[dict], audit: dict,
                 frame.insert(0, "material", material)
                 collection.append(frame)
         if not importance.empty:
-            denominator = row.get("baseline_mae")
+            importance["metric"] = row["importance_metric"]
+            denominator = row.get("baseline_rmse" if signed_rate else "baseline_mae")
             importance["baseline_relative_importance"] = (
                 pd.to_numeric(importance.importance_mean, errors="coerce") / float(denominator)
                 if _finite(denominator) and float(denominator) > 0 else np.nan)
@@ -365,6 +395,11 @@ def build_study_report(out: Path, summaries: list[dict], audit: dict,
         detail = '<section class="target"><h2>' + _text(material + ' · ' + label) + '</h2>'
         detail += '<p><span class="badge">' + _text(row.get("status") or 'unknown') + '</span> Model: <strong>'
         detail += _text(row.get("candidate") or '—') + '</strong>.</p>'
+        if signed_rate:
+            detail += ('<p>Signed annual PCI change: negative values mean deterioration and zero means '
+                       'no recorded PCI change. Model selection uses development weighted RMSE. '
+                       'MAE skill compares with the training-derived weighted mean and remains a separate diagnostic.</p>')
+        detail += '<p>Weighted holdout MAE and RMSE are in ' + _text(row["target_units"]) + '.</p>'
         failed, unavailable = row.get("candidate_failure_count"), row.get("candidate_unavailable_count")
         if (_finite(failed) and failed > 0) or (_finite(unavailable) and unavailable > 0):
             detail += ('<p class="notice">Candidate attempts with errors: ' + _number(failed, 0) +
@@ -374,9 +409,11 @@ def build_study_report(out: Path, summaries: list[dict], audit: dict,
             detail += '<p class="notice">Comparison attempts with errors: ' + _number(row["comparison_failure_count"], 0) + '. See all candidate scores for statuses.</p>'
         if row.get("importance_status") in {"failed", "timed_out"}:
             detail += '<p class="notice">Primary feature explanation status: ' + _text(row["importance_status"]) + '.</p>'
-        detail += _table(["MAE skill", "Holdout R²", "MAE", "Baseline MAE", "Holdout rows / groups"], [[
+        detail += _table(["MAE skill", "Holdout R²", "Weighted holdout MAE", "Weighted holdout RMSE",
+                          "Baseline MAE", "Baseline RMSE", "Holdout rows / groups"], [[
             _percent(row.get("mae_skill")), _number(row.get("holdout_r2")),
-            _number(row.get("holdout_mae")), _number(row.get("baseline_mae")),
+            _number(row.get("holdout_mae")), _number(row.get("holdout_rmse")), _number(row.get("baseline_mae")),
+            _number(row.get("baseline_rmse")),
             _number(row.get("holdout_rows"), 0) + ' / ' + _number(row.get("holdout_groups"), 0)]])
         if row["mostly_zero_target"]:
             detail += ('<p class="notice">Mostly zero target: ' + _percent(prevalence) +
@@ -393,12 +430,14 @@ def build_study_report(out: Path, summaries: list[dict], audit: dict,
             detail += ('<p class="notice">Feature rankings are exploratory: this target has not demonstrated '
                        'reliable improvement over the baseline. Do not interpret low importance as evidence '
                        'that a feature has no relationship with the target.</p>')
-        if _finite(row.get("climate_added_skill")):
-            detail += ('<p>Adding climate changed holdout MAE by <strong>' +
-                       _percent(row["climate_added_skill"]) + '</strong> relative to the model selected '
+        climate_skill = "climate_added_rmse_skill" if signed_rate else "climate_added_skill"
+        climate_metric = "RMSE" if signed_rate else "MAE"
+        if _finite(row.get(climate_skill)):
+            detail += ('<p>Adding climate changed holdout ' + climate_metric + ' by <strong>' +
+                       _percent(row[climate_skill]) + '</strong> relative to the model selected '
                        'using other predictors alone. Positive means lower error; this comparison includes '
                        'model selection and is not a causal effect.</p>')
-        if not stage_metrics.empty:
+        if not signed_rate and not stage_metrics.empty:
             component_holdout = stage_metrics.loc[stage_metrics.partition.eq("holdout") & stage_metrics.feature_set.eq("all")]
             if not component_holdout.empty:
                 component = component_holdout.iloc[0]
@@ -413,13 +452,18 @@ def build_study_report(out: Path, summaries: list[dict], audit: dict,
         families = task_comparisons["family_summary.csv"]
         if not families.empty:
             detail += '<details><summary>Model-family comparisons and explanations</summary>'
-            detail += ('<p>Representatives are selected independently per family and feature set using development CV MAE. '
+            choice_metric = 'weighted RMSE' if signed_rate else 'MAE'
+            choice_column = 'cv_rmse' if signed_rate else 'cv_mae'
+            detail += ('<p>Representatives are selected independently per family and feature set using development CV '
+                       + choice_metric + '. '
                        'Holdout scores evaluate those choices. Importance is exploratory predictive reliance; '
                        'repeat SD is permutation variability, not a confidence interval. Climate comparisons are not causal.</p>')
             all_families = families.loc[families.feature_set.eq("all")]
-            detail += _table(["Family", "CV choice", "Status", "CV MAE", "Holdout MAE skill", "Climate added skill", "Explanation status"], [
+            detail += _table(["Family", "CV choice", "Status", "CV " + choice_metric,
+                              "Weighted holdout RMSE", "Holdout MAE skill", "Climate added " + climate_metric + " skill", "Explanation status"], [
                 [str(r.get("family", "")), str(r.get("candidate", "")), str(r.get("comparison_status", "")),
-                 _number(r.get("cv_mae")), _percent(r.get("mae_skill")), _percent(r.get("climate_added_skill")), str(r.get("importance_status", ""))]
+                 _number(r.get(choice_column)), _number(r.get("holdout_rmse")),
+                 _percent(r.get("mae_skill")), _percent(r.get(climate_skill)), str(r.get("importance_status", ""))]
                 for r in all_families.to_dict("records")])
             family_importance = task_comparisons["family_importance.csv"]
             if not family_importance.empty:
@@ -438,24 +482,25 @@ def build_study_report(out: Path, summaries: list[dict], audit: dict,
             blocks = importance.loc[importance.kind.eq("climate_block")]
             if len(blocks):
                 block = blocks.iloc[0]
-                detail += ('<p>Permuting the whole climate block increased MAE by <strong>' +
+                detail += ('<p>Permuting the whole climate block increased ' + row["importance_metric"].upper() + ' by <strong>' +
                            _number(block.get("importance_mean")) + '</strong> (repeat SD ' +
                            _number(block.get("importance_std")) + ').</p>')
-        detail += '<div class="charts"><div><h3>Observed versus predicted</h3>' + _scatter(predictions) + '</div>'
-        detail += '<div><h3>Strongest predictors</h3>' + _importance_chart(importance) + '</div></div>'
+        detail += '<div class="charts"><div><h3>Observed versus predicted</h3>' + _scatter(predictions, signed_rate=signed_rate) + '</div>'
+        detail += '<div><h3>Strongest predictors</h3>' + _importance_chart(importance, metric=row["importance_metric"]) + '</div></div>'
         if not importance.empty:
             feature_rows = [[str(v.get("feature", "")), 'climate' if _true(v.get("is_climate")) else 'other',
                              _number(v.get("importance_mean")), _number(v.get("importance_std"))]
                             for v in importance.to_dict("records")]
             detail += '<details><summary>All importance estimates</summary>'
-            detail += _table(["Feature / block", "Type", "MAE increase", "Repeat SD"], feature_rows) + '</details>'
+            detail += _table(["Feature / block", "Type", row["importance_metric"].upper() + " increase", "Repeat SD"], feature_rows) + '</details>'
         detail += '</section>'
         cards.append(detail)
     summary_table = pd.DataFrame(records, columns=SUMMARY_COLUMNS)
-    # Missing skill values sort last; raw MAE is deliberately not a ranking key.
+    # Keep different target kinds separate. Missing skill values sort last;
+    # raw errors are deliberately not used to rank targets with different scales.
     if not summary_table.empty:
-        summary_table = summary_table.sort_values(["mae_skill", "holdout_r2", "material", "target"],
-                                                  ascending=[False, False, True, True], na_position="last")
+        summary_table = summary_table.sort_values(["target_kind", "mae_skill", "holdout_r2", "material", "target"],
+                                                  ascending=[True, False, False, True, True], na_position="last")
     importance_table = pd.concat(importance_tables, ignore_index=True).reindex(columns=IMPORTANCE_COLUMNS) if importance_tables else pd.DataFrame(columns=IMPORTANCE_COLUMNS)
     prediction_table = pd.concat(prediction_tables, ignore_index=True).reindex(columns=PREDICTION_COLUMNS) if prediction_tables else pd.DataFrame(columns=PREDICTION_COLUMNS)
     leader_table = pd.concat(leader_tables, ignore_index=True).reindex(columns=LEADER_COLUMNS) if leader_tables else pd.DataFrame(columns=LEADER_COLUMNS)
@@ -473,24 +518,46 @@ def build_study_report(out: Path, summaries: list[dict], audit: dict,
         if name == "family_importance.csv" and "heuristic_support" not in combined and "reliable" in combined:
             combined = combined.rename(columns={"reliable": "heuristic_support"})
         combined.reindex(columns=["material", "target", *columns]).to_csv(_path(out, name), index=False)
-    overview_rows = [[str(v["material"]) + ' · ' + _target_label(v), str(v.get("status") or '—'),
-                      _percent(v.get("mae_skill")), _number(v.get("holdout_r2")),
-                      _number(v.get("valid_target_rows"), 0) + ' / ' + _number(v.get("valid_target_groups"), 0),
-                      _percent(v.get("nonzero_fraction")) + (' · mostly zero' if _true(v.get("mostly_zero_target")) else '')]
-                     for v in summary_table.to_dict("records")]
-    main = '<section><h2>Which deduct families are most predictable?</h2>'
-    main += ('<p>Ranked by holdout <strong>MAE skill</strong>: 1 − model error / baseline error. '
-             'Positive values improve on the training-derived median baseline; zero means no improvement; '
-             'negative means worse. An undefined score is shown as — when baseline error is zero. '
-             'R² compares predictions with the holdout mean; negative R² indicates poor fit.</p>')
-    main += _table(["Surface · target", "Status", "MAE skill", "R²", "Valid rows / groups", "Nonzero"], overview_rows) if overview_rows else '<p>No target tasks were recorded.</p>'
-    main += ('<p class="caption">Raw errors are shown within each target below. They are not used to rank '
-             'families with different scales. A mostly zero target can have small error while remaining '
-             'difficult to predict when distress occurs. “Mostly zero” flags targets with fewer than '
-             '5% nonzero eligible observations; it is descriptive, not an accuracy judgment.</p></section>')
-    strongest = []
-    if not importance_table.empty:
-        for row in summary_table.to_dict("records"):
+    rate_table = summary_table.loc[summary_table.target_kind.eq("signed_pci_rate")].sort_values(["material", "target"])
+    deduct_table = summary_table.loc[summary_table.target_kind.ne("signed_pci_rate")]
+    has_rate, has_deduct = not rate_table.empty, not deduct_table.empty
+    main = ''
+    for table, signed_rate in [(rate_table, True), (deduct_table, False)]:
+        if table.empty:
+            continue
+        heading = 'Signed PCI rate models' if signed_rate else 'Which deduct families are most predictable?'
+        baseline_name = 'weighted mean' if signed_rate else 'median'
+        main += '<section><h2>' + heading + '</h2>'
+        if signed_rate:
+            main += ('<p>DetRatePerYear is signed annual PCI change in <strong>PCI points/year</strong>. '
+                     'Negative values mean deterioration. Models are selected by development weighted RMSE '
+                     'and shown by surface, separately from deduct totals. MAE skill is a secondary diagnostic.</p>')
+        else:
+            main += '<p>Ranked by holdout <strong>MAE skill</strong>. Errors are in <strong>deduct points</strong>.</p>'
+        main += ('<p>MAE skill is 1 − model MAE / baseline MAE. Positive values improve on the training-derived '
+                 + baseline_name + ' baseline; zero means no improvement; negative means worse. '
+                 'An undefined score is shown as — when baseline error is zero. '
+                 'R² compares predictions with the holdout mean; negative R² indicates poor fit. '
+                 'MAE and RMSE use the saved observation weights; RMSE gives larger errors more influence.</p>')
+        overview_rows = [[str(v["material"]) + ' · ' + _target_label(v), str(v.get("status") or '—'),
+                          _number(v.get("holdout_mae")), _number(v.get("holdout_rmse")),
+                          _percent(v.get("mae_skill")), _number(v.get("holdout_r2")),
+                          _number(v.get("valid_target_rows"), 0) + ' / ' + _number(v.get("valid_target_groups"), 0),
+                          _percent(v.get("nonzero_fraction")) + (' · mostly zero' if _true(v.get("mostly_zero_target")) else '')]
+                         for v in table.to_dict("records")]
+        main += _table(["Surface · target", "Status", "Weighted holdout MAE", "Weighted holdout RMSE",
+                        "MAE skill", "R²", "Valid rows / groups", "Nonzero"], overview_rows)
+        main += ('<p class="caption">Raw errors are not used to rank targets with different scales. '
+                 'A mostly zero target can have small error while remaining difficult to predict when '
+                 'nonzero values occur. “Mostly zero” flags targets with fewer than 5% nonzero eligible '
+                 'observations; it is descriptive, not an accuracy judgment.</p></section>')
+    if summary_table.empty:
+        main += '<section><p>No target tasks were recorded.</p></section>'
+    for table, signed_rate in [(rate_table, True), (deduct_table, False)]:
+        strongest = []
+        for row in table.to_dict("records"):
+            if importance_table.empty:
+                break
             subset = importance_table.loc[(importance_table.material == row["material"]) &
                                          (importance_table.target == row["target"]) &
                                          (importance_table.kind == "feature")].sort_values(
@@ -503,14 +570,16 @@ def build_study_report(out: Path, summaries: list[dict], audit: dict,
                 strongest.append([str(row["material"]) + ' · ' + _target_label(row),
                                   'positive holdout skill' if _true(row.get("importance_reliable")) else 'exploratory',
                                   '; '.join(labels)])
-    if strongest:
-        main += '<section><h2>Predictors across deduct families</h2>'
-        main += _table(["Surface · target", "Interpretation", "Top predictors (MAE increase / baseline MAE)"], strongest)
-        main += ('<p class="caption">Percentages describe permutation error increases relative to each '
-                 'target’s baseline error. They are not percentages of explained variance and need not '
-                 'sum to 100%. Correlated inputs can share or mask importance; the climate-block result '
-                 'helps assess their combined contribution.</p></section>')
-    main += _coverage(audit) + ''.join(cards)
+        if strongest:
+            metric = 'RMSE' if signed_rate else 'MAE'
+            heading = 'Predictors of signed PCI rate' if signed_rate else 'Predictors across deduct families'
+            main += '<section><h2>' + heading + '</h2>'
+            main += _table(["Surface · target", "Interpretation", "Top predictors (" + metric + " increase / baseline " + metric + ")"], strongest)
+            main += ('<p class="caption">Percentages describe permutation error increases relative to each '
+                     'target’s baseline error. They are not percentages of explained variance and need not '
+                     'sum to 100%. Correlated inputs can share or mask importance; the climate-block result '
+                     'helps assess their combined contribution.</p></section>')
+    main += _coverage(audit, has_rate=has_rate, has_deduct=has_deduct) + ''.join(cards)
     html = '''<!doctype html><html lang="en"><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src data:; base-uri 'none'; form-action 'none'">
@@ -523,5 +592,9 @@ header{padding:12px 0 26px}section{background:white;border:1px solid #d9e4ee;bor
 </style></head><body><header><h1>Deduct predictability study</h1>
 <p>Observed family totals · grouped validation · climate and available covariates</p>
 <nav aria-label="Download complete results"><a href="target_summary.csv">Target summary CSV</a><a href="feature_importance.csv">Feature importance CSV</a><a href="model_leaderboard.csv">Model comparisons CSV</a><a href="predictions.csv">Predictions CSV</a><a href="family_summary.csv">Family comparisons CSV</a><a href="family_importance.csv">Family explanations CSV</a><a href="candidate_comparisons.csv">All candidate scores CSV</a><a href="candidate_predictions.csv">All candidate predictions CSV</a><a href="model_runtime.csv">Runtime CSV</a><a href="two_stage_metrics.csv">Two-stage metrics CSV</a><a href="two_stage_predictions.csv">Two-stage components CSV</a></nav></header>'''
+    if has_rate:
+        html = html.replace('Deduct predictability study', 'Pavement target predictability study')
+        subtitle = 'Signed PCI rate and observed family totals' if has_deduct else 'Signed PCI rate'
+        html = html.replace('Observed family totals ·', subtitle + ' ·')
     html += main + '<footer>This report is self-contained and makes no network requests. Outputs remain in the private run directory.</footer></body></html>'
     _path(out, "dashboard.html").write_text(html, encoding="utf-8")

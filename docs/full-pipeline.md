@@ -6,6 +6,31 @@ DataRobot service with this package's local training, evaluation and reporting.
 The separate `study` command uses a different inspection-level population and
 lookback exposure contract; it is not required by `full`.
 
+## Version 0.6.0 numerical release notes
+
+Version 0.6.0 adds `DetRatePerYear` to the standard full-run target sweep for
+each surface, enabled by default and removable with `include_pci_rate: false`.
+It preserves the original signed rate calculation and eligible inspection
+pairs. Existing deduct-family targets remain ending-inspection deduct totals.
+
+The rate task uses a training-weighted mean constant baseline, retains signed
+predictions, and selects candidates by mean interval-weighted development-CV
+RMSE. Signed-rate boosting stopping and primary/family permutation importance
+also use RMSE. The positive-occurrence/severity family is ineligible for this
+target. Deduct tasks retain their weighted median baseline, nonnegative
+prediction treatment and MAE selection. Both task kinds report interval-weighted
+holdout MAE and RMSE in their own target units.
+
+Rate-enabled runs add target-kind/unit metadata, stable pair identities and
+the private `rate_benchmark.csv` comparison manifest. A descriptive
+`rate_interval_diagnostics.csv` separates short-interval support and saved
+holdout error contributions without changing observations or fitting models.
+Code and task fingerprints
+require a new run for this release; the existing external climate cache can
+still be reused. These changes describe software behavior. They do not provide
+new private-data performance results, alter old reports or establish that a new
+model outperforms a historical benchmark.
+
 ## Install and run
 
 ```bash
@@ -37,7 +62,8 @@ Existing profile paths remain relative to that profile. The data argument
 overrides its old `input_dir`; output goes into the new private workspace,
 without overwriting the old run. The full command enables climate, distress,
 PCI and Shapley even if the old profile had skip flags. Those overrides are
-audited. Legacy rate-target lists are replaced by the deduct-family sweep.
+audited. Legacy target lists are replaced by the standard sweep: existing
+end-inspection deduct-family totals plus `DetRatePerYear` for each surface.
 Legacy `datarobot` settings are recorded as ignored, including `train`.
 
 ## Required private inputs
@@ -123,6 +149,7 @@ completed setup. A compact private profile in the **parent** of the data folder 
   "climate_start_year": 1980,
   "climate_end_year": 2025,
   "construction_year_col": "Original Construction Year_start",
+  "include_pci_rate": true,
   "dr_cv_reps": 5,
   "dr_holdout_pct": 20
 }
@@ -148,7 +175,7 @@ with elapsed seconds and relevant counts. Verified stages print Reused on
 resume. Summaries include retained/rejected inspections, pairs, valid/missing
 locations, climate coverage, quarantined pairs, PCI agreement, modeling rows,
 features, validation groups and model outcome counts. The local sweep also
-prints the material and original deduct-family target as each model task starts
+prints the material and original target name as each model task starts
 and finishes. Failure output identifies the phase and its detailed log; success
 prints the dashboard, models and run-report paths.
 
@@ -244,11 +271,57 @@ model predictors so held-out observations cannot influence a learned feature.
 
 ## Preserved definitions
 
-The original pairing population and interval weights are retained. These are
-end-inspection deduct-family totals, named `fam_<family> deduct_end`; they are
-not annualized changes. The original 11 family definitions are retained unless
-a private `families` profile replaces them. Recorded deterioration rates are
-still calculated as an original stage output, but are not the sweep's targets.
+The original pairing population and interval weights are retained. By default,
+each surface has a standard `DetRatePerYear` task alongside the existing
+end-inspection deduct-family tasks. Set `include_pci_rate` to `false` in the
+private full-pipeline profile to opt out of the additional rate task. These
+targets have different meanings and units:
+
+| Target | Definition | Units | Development selection |
+|---|---|---|---|
+| `fam_<family> deduct_end` | Observed family deduct total at the ending inspection | Deduct points | Mean fold interval-weighted MAE |
+| `DetRatePerYear` | `(PCI_end - PCI_start) * 365 / delta_days` | PCI points per year | Mean fold interval-weighted RMSE |
+
+The original 11 family definitions are retained unless a private `families`
+profile replaces them. Deduct-family totals remain observed endpoint levels;
+adding the PCI-rate task does not convert them into annualized family changes.
+The separate `analyze` command has its own annualized target contract.
+
+`DetRatePerYear` keeps the original **signed** convention: deterioration is
+negative, no net change is zero, and an increase would be positive. The original
+pairing rules select eligible nonincreasing-PCI transitions and reset at
+construction/increases; the rate task does not admit those excluded transitions.
+For example, PCI 80 to 70 over 730 days gives `-5` PCI points per year.
+More negative rates mean faster observed deterioration. Do not silently negate
+the target, take its absolute value, or interpret it as ending PCI.
+The original `full` profile defaults to `min_delta_days: 1`; its eligible
+population can therefore include one-day transitions. The separate `analyze`
+workflow's default 365-day minimum does not apply to `full`. Review the actual
+interval distribution: annualizing a PCI difference over a short interval can
+produce a large signed rate without a correspondingly large PCI-point change.
+
+For each task, reported holdout errors use its saved positive interval weights,
+`w_i = delta_days_i`, on its eligible holdout rows. With observed target `y_i`
+and prediction `yhat_i`, the metrics are:
+
+```text
+weighted MAE  = sum(w_i * abs(y_i - yhat_i)) / sum(w_i)
+weighted RMSE = sqrt(sum(w_i * (y_i - yhat_i)^2) / sum(w_i))
+```
+
+Both rate errors have units of PCI points per year; deduct-family errors have
+units of deduct points. Lower is better. RMSE gives larger errors more influence
+than MAE. The rate model is chosen using development CV RMSE, not the reserved
+holdout score. Each CV fold uses interval-weighted errors; the selection score
+is the arithmetic mean across all required folds for a complete candidate.
+This is distinct from computing
+one pooled RMSE across all out-of-fold predictions. Holdout RMSE is computed
+once across the saved holdout rows and weights.
+
+Adding this task requires a new private run under the existing code-fingerprint
+rules. Installing the update or reopening an older dashboard does not fit rate
+models or create new operational results. Generated-data tests establish the
+software contract, not performance on the private pavement population.
 
 The ERA5 worker emits its original **37 output fields**: interval and source
 metadata plus thermal, PG/LTPP, cooling, rainflow and construction-aging results.
@@ -277,18 +350,20 @@ The original numeric calculations have generated-input parity checks against
 the recovered implementation. Deliberate integration changes are limited to
 privacy/boundary guards, robust header/date setup, explicit blank/malformed
 handling, ambiguity quarantine, target-specific availability, retained constant
-targets, shared validation, and local training/reporting. Those checks do not
-constitute standards certification or validation on operational data.
+targets, shared validation, local training/reporting, and the additional signed
+PCI-rate task. Those checks do not constitute standards certification or
+validation on operational data.
 
 ## Local models and interpretation
 
-Observed-level `full` and `study` searches enable the R7 comparison/runtime path
-automatically. Primary CV-MAE selection and all original preparation stages
+The `full` and `study` searches enable the comparison/runtime path automatically.
+Observed deduct-level tasks retain primary CV-MAE selection. The additional
+signed `full` rate task uses CV-RMSE selection; all original preparation stages
 are preserved. The library call to `search_levels` without `model_options`
 retains its established in-process execution path.
 
-Each material/family task compares a weighted median baseline, two ElasticNet
-settings, two random-forest settings and four ExtraTrees settings. ExtraTrees
+Each material/deduct-family task compares a weighted median baseline, two
+ElasticNet settings, two random-forest settings and four ExtraTrees settings. ExtraTrees
 uses 200 trees, leaf sizes 2/10, maximum depth 12/unlimited and one worker.
 It needs no additional dependency. The four configurations add 40 training
 fits per target with five CV folds and two feature sets, plus selected refits.
@@ -296,13 +371,23 @@ Installing `.[original,xgboost]` adds eight optional CPU XGBoost settings:
 depth 3/6 and learning rate 0.05/0.1, each with a fixed 300-round budget or
 20-round patience. XGBoost is version-bounded to `>=3.1.3,<3.2`.
 
+The signed PCI-rate task uses a training-weighted **mean** baseline, which is
+the constant reference appropriate to squared error, and the eligible signed
+versions of the regression candidates. Rate predictions have no nonnegative
+floor. The positive-occurrence/positive-severity model is ineligible for this
+signed response. Constant targets, insufficient support and unavailable optional
+backends retain explicit statuses rather than silently switching target meaning.
+
 Stopped candidates reserve 20% of the current training fold's groups for
 stopping. Preprocessing is fitted on the remaining fitting groups and applied
 unchanged to stopping inputs. The chosen iteration count is then used to refit
 fresh preprocessing and the model on that entire training fold. Final
 development fitting repeats this same nested policy. Outer CV evaluation
 groups and holdout groups never supply stopping data. Both fitting and stopping
-receive their matching interval weights. Selection still uses mean CV MAE.
+receive their matching interval weights. Final candidate selection uses the
+task's development metric: mean CV MAE for deduct levels and mean CV RMSE for
+the signed PCI rate. Signed-rate XGBoost and LightGBM stopping probes use
+weighted RMSE; deduct-level probes retain weighted MAE.
 
 `leaderboard.csv` and the consolidated model comparisons include `cv_iterations`,
 `cv_training`, `final_iterations` and `final_training`. The training JSON fields
@@ -317,8 +402,9 @@ The optional `lightgbm` extra (`>=4.6.0,<4.7`) adds eight more CPU configuration
 15/31 leaves, minimum leaf observations 10/30, learning rate 0.05, and up to
 300 rounds, with fixed or grouped-stopping variants. They reuse the same
 training-only split/refit policy and interval weights. Fresh native callbacks
-use patience 20 and weighted MAE. CPU fits use `n_jobs=1`, deterministic mode
-and column-wise histograms. Inputs follow the existing numeric/one-hot path;
+use patience 20 and the task's weighted MAE or RMSE objective. CPU fits use
+`n_jobs=1`, deterministic mode and column-wise histograms. Inputs follow the
+existing numeric/one-hot path;
 native categorical support is not introduced.
 
 LightGBM audits retain raw feature order, neutral encoded column names,
@@ -343,8 +429,9 @@ each training fold. Values beyond training support use constant extrapolation.
 Private training details record roles, bounds, knot vectors and feature blocks.
 The saved estimator's `predict_components(X)` returns an intercept and feature
 terms for its unclipped margin; `predict_margin(X)` reconstructs that sum.
-`predict(X)` then applies the shared nonnegative floor, which can alter strict
-additivity at the boundary. These terms describe predictive associations and
+`predict(X)` applies the nonnegative floor for deduct-level tasks, which can
+alter strict additivity at the boundary. Signed rate predictions must retain
+their sign. These terms describe predictive associations and
 can share effects when predictors are correlated. This is additive spline
 regression with an L2 coefficient penalty, not a pyGAM smoothing implementation.
 It adds 40 CV fits per five-fold target, plus selected refits. Closed-form Ridge
@@ -361,7 +448,8 @@ at least five rows and two groups in each class. Severity fitting needs ten
 positive rows and two positive groups. Otherwise, training-weighted prevalence
 and positive means supply explicit fallbacks. No positives means zero prediction;
 all positives means probability one; a constant positive magnitude stays constant.
-The global development-constant task shortcut still evaluates the median alone.
+For deduct levels, the development-constant task shortcut evaluates the median
+alone. Signed rate tasks use their mean baseline.
 
 `predict_occurrence_severity(X)` returns `p_positive`, `positive_mean` and their
 product `prediction`, plus training-only constant references. The product
@@ -404,16 +492,25 @@ cases across every family. Missing, constant, sparse or unsupported tasks remain
 visible with reasons instead of stopping the whole sweep.
 
 The predictor audit excludes endpoint outcomes, other targets, identity fields
-and derived deltas. Prior inspection condition and reviewed original start-state
-features remain available. `keep_distress` and `keep_latlon` retain their original
+and derived deltas. `DetRatePerYear`, `PCI_end`, `delta_PCI` and the interval
+denominator are not rate predictors; `delta_days` remains a weight. Prior
+inspection condition and reviewed original start-state features remain
+available. `keep_distress` and `keep_latlon` retain their original
 explicit meanings. Counts fitted from the entire run are not silently presented
 as training-fold preprocessing.
 
-The dashboard ranks baseline-relative holdout MAE skill and shows R-squared,
-MAE/RMSE, prevalence, group support and prediction plots. Raw MAE is not used to
-rank differently scaled targets. The same model search without climate measures
+Read the target name, units, selection metric and baseline before interpreting
+the dashboard's scores. Deduct-level views retain baseline-relative holdout
+MAE skill, R-squared, MAE/RMSE, prevalence, group support and prediction plots.
+For the signed rate, use weighted holdout RMSE and MAE in PCI points per year;
+positive-distress prevalence is not a deterioration frequency. Rate summaries
+include `baseline_rmse`, `nonclimate_rmse`, `rmse_skill` and
+`climate_added_rmse_skill`. Skill uses the matching RMSE reference and is
+undefined when that reference error is zero. Raw errors must not rank targets
+with different units. The same model search without climate measures
 its added value, and repeated holdout permutations rank individual features and
-the climate block. Correlated features can share importance; repeat variability
+the climate block using MAE for deduct levels and RMSE for signed rate.
+Correlated features can share importance; repeat variability
 is not a sampling confidence interval. A many-target ranking is exploratory and
 needs confirmation on independent data.
 
@@ -426,6 +523,125 @@ Separate model bundles, CV scores, full predictions and importance tables are
 in `pipeline/09_local_models/materials/<surface>/<target>/`. `target_map.csv`
 preserves the mapping from safe directory names to original target column names.
 No plotting/modeling service is needed to view the report.
+
+## Comparing models, data changes and historical benchmarks
+
+Use saved holdout predictions to compare models with the observations. Match
+each prediction to its original target, surface, source-row identity, group
+assignment and weight. A parity plot should show observed target on one axis
+and predicted target on the other, with a one-to-one reference line. For rate
+tasks, retain the signed axes and label them PCI points per year. Inspect
+residuals, `prediction - observed`, alongside RMSE and MAE: a positive residual
+on a negative rate means the prediction is less negative than observed and
+understates the deterioration magnitude.
+
+To identify whether an improvement comes from a model change or a data change,
+change one part of the comparison at a time:
+
+| Comparison | Keep fixed | Change |
+|---|---|---|
+| Model comparison | Eligible rows, target values, feature definitions, weights, group holdout and CV folds | Candidate model or its development-selected settings |
+| Added-data comparison | Target rows and values, weights, group holdout, CV folds and model-selection procedure | Added predictors, such as reviewed structural attributes |
+| Combined system comparison | A separately reserved common evaluation population and its target definition | Both data preparation and model procedure; report this as a combined change |
+
+For an added-data comparison, evaluate the original and enriched approaches on
+the **same rows**, including the same missing-data policy. If enrichment changes
+eligibility, report a separate common-row comparison and coverage counts for
+each complete run. Do not compare the old model's error on a larger population
+with the new model's error only on well-documented sections and attribute the
+difference entirely to structural data. Reuse documented source-row identities;
+row numbers generated afresh in two runs are not necessarily a valid join key.
+
+Rate-enabled full runs write
+`pipeline/09_local_models/rate_benchmark.csv`, with one record per surface
+(`material`) and development/holdout `partition`. The manifest fingerprints
+the rate task's inputs independently of model code and CSV row order:
+
+| Field | Meaning |
+|---|---|
+| `eligible_rows` | Number of finite rate observations in that surface and partition |
+| `identity_status` | `ready` when every eligible pair has a usable unique identity; `no_eligible_rows` for an empty partition; `identity_unavailable` when identity evidence is missing or ambiguous |
+| `pair_ids_sha256` | Fingerprint of the eligible pair identities |
+| `outcomes_weights_sha256` | Fingerprint of each eligible pair's signed rate and interval weight |
+| `group_folds_sha256` | Fingerprint of each eligible pair's validation group and fold |
+| `features_sha256` | Fingerprint of the admitted feature names/order and their numeric values, including missingness, on those pairs |
+
+`pipeline/09_local_models/row_map.csv` connects prediction `row_id` values to
+their source modeling/curated rows and `pair_id`. For rate-enabled surfaces,
+the pair identity uses the surface, original source filenames when available,
+section identity and inspection start/end dates. Source renaming, section
+renumbering or date corrections change that identity. Such changes do not by
+themselves prove that the physical pavement changed. Missing or duplicate
+identities remain blank rather than being replaced with a run-specific row
+number.
+
+For a fixed-data model comparison, require matching fingerprints and counts
+for both development and holdout, then verify that the target definition and
+other modeling settings agree. For an added-predictor comparison, require
+matching pair, outcome/weight and group/fold fingerprints; the feature
+fingerprint is expected to change. Review the feature definitions and
+availability separately. Matching hashes establish agreement in the recorded
+inputs, not scientific validity or absence of leakage.
+
+When `identity_status` is not `ready`, the corresponding hashes are blank;
+do not treat matching blanks as comparable evidence. Recover the missing
+provenance before claiming a verified comparison. Historical runs without
+this manifest need their original rows, predictions, weights and assignments
+reconciled explicitly. The manifest is not a historical score and cannot
+recover an RMSE that was never saved.
+
+The complementary
+`pipeline/09_local_models/rate_interval_diagnostics.csv` reports the eligible
+rate population in ten rows per surface: development and holdout, each split
+into five duration bands. For whole-day inspection intervals these are one
+day, 2–29, 30–89, 90–364 and 365 or more days. To avoid imposing a new input
+restriction, the recorded labels also cover positive fractional durations:
+`<=1 day`, `>1 to <30 days`, `30 to <90 days`, `90 to <365 days`, and
+`365+ days`.
+
+Each row reports eligible observations, distinct groups, minimum and unweighted
+median signed rate, and total interval weight. Groups can appear in several
+bands, so group counts must not be summed as a count of unique surface groups.
+Only the selected model's saved holdout predictions receive interval-weighted
+RMSE, MAE and weighted squared-error sum. `weighted_sse_share` is the band's
+weighted squared-error sum divided by the entire surface's holdout sum, a
+fraction rather than a percentage. It shows error contribution, not a causal
+effect of interval length. It is undefined when total holdout error is zero.
+
+Development records remain descriptive and have no score values. Empty bands
+have zero counts and blank rate/score statistics. `prediction_status` records
+`not_evaluated`, `no_eligible_rows`, `no_predictions`, `incomplete_predictions`
+or `scored`; `prediction_rows` records saved coverage in that band. If the
+selected model's prediction set is incomplete, all scores for that surface's
+holdout remain blank, including bands with some predictions. Saved row
+identities, actual rates and weights must match the source observations before
+scoring. This diagnostic performs no refitting, deletion or winsorization and
+does not choose a new interval cutoff from holdout outcomes.
+
+Freeze the group assignment before fitting either approach. All rows from the
+same validation group stay together; a random row split can place related
+inspections in both development and holdout. Shared group assignments across
+targets do not guarantee identical evaluation rows because target availability
+can differ. Hyperparameter selection, imputation, scaling and any learned
+feature construction use development data only. Repeatedly choosing changes
+because they improve the same holdout makes that holdout part of development;
+confirm the final choice on a new independent evaluation set.
+
+An older DataRobot or other historical RMSE is comparable only after verifying
+the target definition and sign, units, surface population, pairing and exclusion
+rules, feature availability, weights, holdout rows/groups, and whether the score
+is CV or holdout. Also distinguish mean-fold RMSE from pooled RMSE. Matching a
+metric name alone is insufficient: endpoint deduct RMSE cannot be compared
+numerically with annual PCI-rate RMSE. A historical number without its original
+predictions, row identities, split and weights is a reference value, not evidence
+that the current model improved or regressed. Do not infer missing RMSE from
+MAE or MAE-based percentage skill; obtain the saved metric or recompute it from
+the exact observations, predictions and weights.
+
+These comparisons assess predictive performance under the retained retrospective
+climate contract. They do not establish a climate or structural cause, and they
+do not establish prospective forecast accuracy unless all predictors satisfy
+the intended prediction-date availability rule.
 
 ## Resume and diagnostics
 
@@ -473,7 +689,8 @@ A private full-pipeline JSON profile, or study options profile, accepts:
 ```
 
 Merge this object into the existing profile. `candidate_ids` can be a list of
-implemented, available registry IDs, while the median baseline is retained.
+implemented, available registry IDs, while the task's baseline is retained
+(weighted median for deduct levels, weighted mean for signed PCI rate).
 `max_fit_calls` rejects a sweep whose conservative fit-call upper bound exceeds
 the supplied positive integer. The pre-fit `model_fit_budget.json` includes
 target counts, outer fits, worst-case selection/refit fallbacks and native
@@ -488,12 +705,14 @@ Every complete CV candidate is refitted on development data, serialized into
 `candidate_models/<feature_set>__<candidate>.joblib`, reloaded, and checked
 against its saved holdout predictions. Model paths in CSVs are relative to the
 material/target task directory. Existing primary model and prediction files
-remain available. For each family, all-features and nonclimate representatives
-are chosen independently by development CV MAE; holdout outcomes do not choose
+remain available. For each task, all-features and nonclimate representatives
+are chosen independently by the task's development CV metric: MAE for deduct
+levels, RMSE for the signed PCI rate. Holdout outcomes do not choose
 representatives. Failed refits, unavailable backends, partial CV and constant
 shortcuts retain explicit statuses. Importance failures have separate statuses.
 
-Family importance uses the saved fitted pipeline and unchanged holdout weights.
+Family importance uses the saved fitted pipeline and unchanged holdout weights,
+with MAE loss for deduct levels and RMSE loss for the signed PCI rate.
 Five repeated joint permutations cover individual predictors, the whole climate
 block, and connected training-only numeric Spearman blocks at absolute
 correlation at least 0.8. The CSV records each block's member columns. Two-stage

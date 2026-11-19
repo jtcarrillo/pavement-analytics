@@ -87,11 +87,13 @@ def model_options(raw=None):
     return options
 
 
-def fit_budget(folds, options, *, constant=False, feature_sets=2):
-    from .model_registry import candidate_catalog
-    catalog = [x for x in candidate_catalog() if x["candidate"] == "median" or
+def fit_budget(folds, options, *, constant=False, feature_sets=2, target_kind="deduct_total"):
+    from .model_registry import baseline_metadata, candidate_catalog
+    baseline = baseline_metadata(target_kind)["candidate"]
+    catalog = [x for x in candidate_catalog(target_kind=target_kind) if x["candidate"] == baseline or
                (not constant and (options["candidate_ids"] is None or x["candidate"] in options["candidate_ids"]))]
-    available = [x for x in catalog if x.get("availability", "available") == "available"]
+    available = [x for x in catalog if x.get("availability", "available") == "available"
+                 and target_kind in x["supported_target_kinds"]]
     count = len(available)
     stages = sum(2 if x["family"] == "two_stage" or x["parameters"].get("early_stopping_rounds") else 1 for x in available)
     diagnostic = sum(x["family"] == "two_stage" for x in available)

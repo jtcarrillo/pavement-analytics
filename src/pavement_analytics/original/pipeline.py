@@ -30,7 +30,7 @@ DEFAULTS = {
     "on_missing_location": "warn", "skip_distress": False, "skip_pci": False,
     "no_shapley": False, "fit_deduct_curves": False, "deduct_curves": None,
     "families": None, "cdv_curves": None, "target_mode": "deduct_families", "standard": "D5340", "rules": "D6433", "sev_mode": "sequential",
-    "min_groups": 5, "keep_distress": False, "keep_latlon": False,
+    "include_pci_rate": False, "min_groups": 5, "keep_distress": False, "keep_latlon": False,
     "min_delta_days": 1, "max_delta_days": None, "high_card_threshold": .95,
     "extra_drop": [], "fail_on_warning": False, "pci_warning_mae": 5.0,
     "datarobot": "off", "targets": {}, "dr_mode": "quick", "dr_cv_reps": 5,
@@ -644,25 +644,28 @@ class Pipeline:
     def target_names(self, surface):
         if self.c["target_mode"] == "legacy":
             return list(self.c["targets"].get(surface, ["DetRatePerYear"]))
-        return [f"fam_{family} deduct_end" for family in sorted(self.families)]
+        names = [f"fam_{family} deduct_end" for family in sorted(self.families)]
+        if self.c.get("include_pci_rate", False):
+            names.append("DetRatePerYear")
+        return names
 
     def modeling(self, surface):
         df = read_table(self.path("06_curated", surface))
         names = self.target_names(surface)
         if self.c["target_mode"] == "deduct_families" and surface in self.c["targets"] and self.c["targets"][surface] != names:
-            self.run.warn("AUTOTARGET_OVERRIDE", f"{surface}: the legacy target list was replaced by the requested deduct-family total sweep.")
+            self.run.warn("AUTOTARGET_OVERRIDE", f"{surface}: the legacy target list was replaced by the configured full target sweep.")
         path = self.path("07_modeling", surface)
         auditpath = self.out / "07_modeling" / f"{surface}_feature_audit.csv"
         rejectedpath = self.out / "07_modeling" / f"{surface}_rejected_rows.csv"
         eligibilitypath = self.out / "07_modeling" / f"{surface}_target_eligibility.csv"
         for name in names:
             if name not in df:
-                if self.c["target_mode"] == "legacy" and surface in self.c["targets"] and len(df):
+                if len(df) and (name == "DetRatePerYear" or (self.c["target_mode"] == "legacy" and surface in self.c["targets"])):
                     raise ValueError(f"{surface}: explicitly requested target {name!r} is absent")
                 df[name] = np.nan
         if df.empty:
             write_csv(path, pd.DataFrame(columns=[*names, "delta_days", "partition_airfield", "partition_section", "_pipeline_model_row"]))
-            write_csv(auditpath, pd.DataFrame([{"column": name, "disposition": "TARGET", "reason": "declared family target"} for name in names]))
+            write_csv(auditpath, pd.DataFrame([{"column": name, "disposition": "TARGET", "reason": "declared target"} for name in names]))
             write_csv(rejectedpath, pd.DataFrame(columns=["exclusion_reason"]))
             write_csv(eligibilitypath, pd.DataFrame(columns=["source_row", "target", "eligible", "reason"]))
             return {"rows": 0, "features": 0, "trainable": False,
@@ -690,7 +693,7 @@ class Pipeline:
             target_reason = reason.copy()
             target_reason.loc[~np.isfinite(y[name]) & target_reason.eq("")] = "invalid_or_unobserved_target"
             distress_target = name.startswith(("loss_", "pci_only_", "pci_calc_", "fam_")) or bool(re.match(r"^\d{2}[LMH]? ", name))
-            if distress_target:
+            if distress_target and np.isfinite(y[name]).any():
                 if not gapcols:
                     raise ValueError("Distress-derived targets require PCI export-gap checks; enable PCI calculation")
                 gap = df[gapcols].eq(1).any(axis=1)
